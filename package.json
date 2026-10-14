@@ -1,0 +1,16 @@
+{
+  "name": "os-agent",
+  "version": "1.0.0",
+  "description": "Desktop OS Agent with ChatGPT UI, NVIDIA NIM, and Phone Remote Trackpad & Screen Mirror",
+  "main": "desktop_app/index.html",
+  "scripts": {
+    "backend": "backend\\venv\\Scripts\\python.exe -m uvicorn main:app --app-dir backend --host 0.0.0.0 --port 8000 --reload",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "start": "python start.py"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.2"
+  }
+}

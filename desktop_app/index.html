@@ -1,0 +1,1637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OS Agent - ChatGPT Desktop</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+:root {
+  --bg-main: #212121;
+  --bg-sidebar: #171717;
+  --bg-card: #282828;
+  --bg-card-hover: #323232;
+  --bg-input: #2f2f2f;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text-main: #ececec;
+  --text-muted: #999999;
+  --text-dim: #666666;
+  --accent: #10a37f;
+  --accent-hover: #158e70;
+  --accent-light: rgba(16, 163, 127, 0.15);
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+  --transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Strict Global SVG & Icon Constraints */
+svg {
+  display: block;
+  flex-shrink: 0;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.icon {
+  width: 16px !important;
+  height: 16px !important;
+  flex-shrink: 0;
+}
+
+.icon-sm {
+  width: 14px !important;
+  height: 14px !important;
+  flex-shrink: 0;
+}
+
+.app-container {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* SIDEBAR */
+.sidebar {
+  width: 260px;
+  background-color: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  transition: transform 0.25s ease, width 0.25s ease, padding 0.25s ease;
+  z-index: 50;
+  flex-shrink: 0;
+}
+
+.sidebar.collapsed {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-right: none;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.new-chat-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.new-chat-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-strong);
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+}
+
+/* Phone Remote Card in Sidebar */
+.remote-card {
+  background: linear-gradient(145deg, rgba(16, 163, 127, 0.08), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(16, 163, 127, 0.22);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+.remote-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.remote-card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.status-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 6px var(--warning);
+  flex-shrink: 0;
+}
+
+.status-indicator.connected {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+.badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.badge.connected {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.remote-card-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  line-height: 1.35;
+}
+
+/* History List */
+.history-section {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.history-item:hover, .history-item.active {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+}
+
+.history-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+  margin-top: auto;
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.user-profile:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #333333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.avatar svg {
+  width: 15px !important;
+  height: 15px !important;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.user-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-status {
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+/* MAIN CONTENT */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  position: relative;
+  background-color: var(--bg-main);
+  overflow: hidden;
+}
+
+.chat-header {
+  height: 52px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  z-index: 20;
+  flex-shrink: 0;
+}
+
+.header-left, .header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Model Selector */
+.model-selector-wrapper {
+  position: relative;
+}
+
+.model-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 600;
+  transition: var(--transition);
+}
+
+.model-selector:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.model-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  background: #252525;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  width: 290px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  padding: 6px;
+  display: none;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.model-dropdown-menu.show {
+  display: flex;
+}
+
+.dropdown-item {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.dropdown-item:hover, .dropdown-item.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-bottom: 2px;
+}
+
+.item-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Header Buttons */
+.header-pill-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.header-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--border-strong);
+}
+
+/* Viewport */
+.chat-viewport {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 20px 130px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+/* Empty State */
+.empty-state {
+  margin: auto 0;
+  max-width: 660px;
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.chatgpt-logo-badge {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  margin-bottom: 4px;
+  box-shadow: 0 4px 16px rgba(16, 163, 127, 0.35);
+}
+
+.chatgpt-logo-badge svg {
+  width: 22px !important;
+  height: 22px !important;
+}
+
+.empty-title {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+
+.empty-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.suggestion-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  width: 100%;
+}
+
+.suggestion-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.suggestion-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.suggestion-header {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.suggestion-text {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Messages */
+.message-thread {
+  max-width: 720px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.msg-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.msg-row.user {
+  justify-content: flex-end;
+}
+
+.msg-bubble {
+  max-width: 82%;
+  padding: 10px 16px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-row.user .msg-bubble {
+  background: #303030;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.msg-row.assistant .msg-bubble {
+  background: transparent;
+  color: var(--text-main);
+  padding-left: 0;
+  max-width: 90%;
+}
+
+.msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(16, 163, 127, 0.2);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* Action Badges in Message */
+.action-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #93c5fa;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-family: monospace;
+}
+
+/* Rich OS Action Widgets & Cards */
+.os-card {
+  margin-top: 10px;
+  background: #1a1a1a;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  font-size: 12px;
+}
+.os-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 600;
+  color: var(--text-main);
+  font-size: 12.5px;
+}
+.os-card-body {
+  padding: 10px 12px;
+}
+.os-meter-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.os-meter-label {
+  width: 90px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.os-meter-bar {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.os-meter-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.os-meter-val {
+  width: 65px;
+  text-align: right;
+  font-weight: 500;
+  color: var(--text-main);
+}
+.os-terminal-box {
+  background: #111111;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  color: #38bdf8;
+  max-height: 250px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.45;
+}
+.os-proc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.os-proc-table th {
+  text-align: left;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.os-proc-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  color: var(--text-main);
+}
+.os-proc-kill-btn {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: var(--transition);
+}
+.os-proc-kill-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+.os-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+
+/* Prompt Box */
+.prompt-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 20px 16px;
+  background: linear-gradient(180deg, rgba(33,33,33,0) 0%, rgba(33,33,33,0.92) 30%, rgba(33,33,33,1) 100%);
+  pointer-events: none;
+}
+
+.prompt-box {
+  pointer-events: auto;
+  max-width: 720px;
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 24px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+  transition: border-color 0.2s;
+}
+
+.prompt-box:focus-within {
+  border-color: var(--border-strong);
+}
+
+.prompt-tools {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 2px;
+}
+
+.prompt-tool-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition);
+  font-size: 14px;
+}
+
+.prompt-tool-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+}
+
+#prompt-textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-family: var(--font-family);
+  font-size: 14px;
+  resize: none;
+  max-height: 160px;
+  line-height: 1.45;
+  padding: 5px 2px;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.send-btn {
+  background: #ffffff;
+  color: #000000;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+
+.send-btn:disabled {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.35);
+  cursor: not-allowed;
+}
+
+.send-btn svg {
+  width: 15px !important;
+  height: 15px !important;
+}
+
+.prompt-footnote {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  text-align: center;
+}
+
+/* Prompt Permission Control Bar (Below Textbox) */
+.prompt-permission-bar {
+  pointer-events: auto;
+  max-width: 720px;
+  width: 100%;
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 12px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-full);
+  backdrop-filter: blur(8px);
+  transition: var(--transition);
+}
+
+.prompt-permission-bar:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.perm-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.perm-badge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.perm-badge-label svg {
+  color: var(--accent);
+}
+
+.perm-dropdown-container {
+  position: relative;
+  flex: 1;
+  max-width: 380px;
+}
+
+.perm-dropdown {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-main);
+  padding: 5px 28px 5px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  transition: var(--transition);
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999999' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+.perm-dropdown:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.perm-dropdown:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.2);
+}
+
+.perm-dropdown option {
+  background: #222222;
+  color: var(--text-main);
+  padding: 8px;
+}
+
+.perm-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
+  padding-right: 4px;
+  white-space: nowrap;
+}
+
+.perm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  transition: var(--transition);
+}
+
+.perm-dot.balanced {
+  background: #38bdf8;
+  box-shadow: 0 0 6px #38bdf8;
+}
+
+.perm-dot.ask {
+  background: #f59e0b;
+  box-shadow: 0 0 6px #f59e0b;
+}
+
+.perm-dot.readonly {
+  background: #94a3b8;
+  box-shadow: 0 0 6px #94a3b8;
+}
+
+
+/* MODALS */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-box {
+  background: #242424;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  width: 90%;
+  max-width: 440px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+}
+
+.modal-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modal-icon {
+  font-size: 20px;
+}
+
+.modal-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-header p {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 18px;
+}
+
+.modal-body.text-center {
+  text-align: center;
+}
+
+/* QR Code Container */
+.qr-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.qr-canvas-wrapper {
+  background: #ffffff;
+  padding: 10px;
+  border-radius: 10px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+}
+
+#qr-canvas {
+  width: 200px !important;
+  height: 200px !important;
+  display: block;
+}
+
+.ip-info-box {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.ip-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.ip-url-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ip-url-row code {
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.connection-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.pairing-instructions {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.step-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  font-size: 10.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Settings Form */
+.form-group {
+  margin-bottom: 14px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+  margin-bottom: 5px;
+  color: var(--text-main);
+}
+
+.form-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.password-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.password-input-row input, .form-select {
+  flex: 1;
+  background: #1c1c1c;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: var(--text-main);
+  font-size: 13px;
+  outline: none;
+}
+
+.password-input-row input:focus, .form-select:focus {
+  border-color: var(--accent);
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  background: #202020;
+}
+
+/* Buttons */
+.btn {
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: var(--transition);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+}
+.btn-outline:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-strong);
+}
+
+.btn-sm {
+  padding: 5px 9px;
+  font-size: 11.5px;
+}
+
+.w-100 {
+  width: 100%;
+}
+
+/* PiP Panel */
+.screen-pip-panel {
+  position: absolute;
+  top: 60px;
+  right: 20px;
+  width: 320px;
+  background: #181818;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.7);
+  z-index: 40;
+  overflow: hidden;
+}
+
+.pip-header {
+  padding: 6px 10px;
+  background: #202020;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.pip-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.pip-body {
+  width: 100%;
+  height: 180px;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pip-body img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+  </style>
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    
+    <!-- LEFT SIDEBAR (ChatGPT Style) -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <button class="new-chat-btn" id="new-chat-btn" title="New Chat (Ctrl+N)">
+          <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>New chat</span>
+        </button>
+        <button class="icon-btn collapse-btn" id="sidebar-toggle" title="Close sidebar">
+          <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="3" x2="9" y2="21"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Quick Phone Remote Card -->
+      <div class="remote-card">
+        <div class="remote-card-header">
+          <div class="remote-card-title">
+            <span class="status-indicator" id="phone-status-dot"></span>
+            <span>Phone Remote</span>
+          </div>
+          <span class="badge" id="phone-status-badge">Standby</span>
+        </div>
+        <p class="remote-card-desc">Control PC screen & trackpad from your mobile browser</p>
+        <button class="btn btn-outline btn-sm w-100" id="btn-open-qr">
+          <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <span>Pair Phone (QR Code)</span>
+        </button>
+      </div>
+
+      <!-- Chat History -->
+      <div class="history-section">
+        <div class="history-label">Recent Sessions</div>
+        <div class="history-list" id="history-list">
+          <div class="history-item active" data-id="default">
+            <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+            <span class="history-title">OS Agent Assistant</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sidebar Footer -->
+      <div class="sidebar-footer">
+        <div class="user-profile" id="btn-settings-footer">
+          <div class="avatar">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </div>
+          <div class="user-meta">
+            <span class="user-name">NVIDIA NIM Settings</span>
+            <span class="user-status" id="footer-api-status">Key required</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN CHAT AREA -->
+    <main class="main-content">
+      <!-- Top Bar / Header -->
+      <header class="chat-header">
+        <div class="header-left">
+          <button class="icon-btn" id="sidebar-open-btn" style="display:none;" title="Open sidebar">
+            <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+            </svg>
+          </button>
+          
+          <!-- Model Selector Dropdown -->
+          <div class="model-selector-wrapper">
+            <div class="model-selector" id="model-selector-btn">
+              <span class="model-name" id="current-model-display">Llama 3.3 70B (NVIDIA NIM)</span>
+              <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            
+            <div class="model-dropdown-menu" id="model-dropdown-menu">
+              <div class="dropdown-item active" data-model="meta/llama-3.3-70b-instruct">
+                <div class="item-title">Meta Llama 3.3 70B Instruct</div>
+                <div class="item-desc">High-speed, powerful reasoning & OS tool automation</div>
+              </div>
+              <div class="dropdown-item" data-model="nvidia/llama-3.1-nemotron-70b-instruct">
+                <div class="item-title">NVIDIA Nemotron 70B Instruct</div>
+                <div class="item-desc">Fine-tuned for agent alignment and complex task workflows</div>
+              </div>
+              <div class="dropdown-item" data-model="deepseek-ai/deepseek-r1">
+                <div class="item-title">DeepSeek R1</div>
+                <div class="item-desc">State of the art reasoning model on NVIDIA NIM</div>
+              </div>
+              <div class="dropdown-item" data-model="mistralai/mistral-large-2-instruct">
+                <div class="item-title">Mistral Large 2 Instruct</div>
+                <div class="item-desc">Superior multilingual & instruction following</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <button class="header-pill-btn" id="btn-top-qr">
+            <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+            <span>Connect Phone</span>
+          </button>
+          <button class="header-pill-btn" id="btn-toggle-screen-pip">
+            <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+            <span>Live Screen</span>
+          </button>
+          <button class="icon-btn" id="btn-open-settings" title="Settings">
+            <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat Stream Body -->
+      <div class="chat-viewport" id="chat-viewport">
+        
+        <!-- Empty State (Shown when no messages) -->
+        <div class="empty-state" id="empty-state">
+          <div class="chatgpt-logo-badge">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+            </svg>
+          </div>
+          <h1 class="empty-title">What can I control for you today?</h1>
+          <p class="empty-subtitle">OS Desktop Agent connected with NVIDIA NIM and Phone Remote</p>
+
+          <div class="suggestion-grid">
+            <div class="suggestion-card" onclick="applySuggestion('Check my system telemetry: CPU, RAM, storage across all drives, and battery status')">
+              <div class="suggestion-header">
+                <span>🖥️ System Telemetry</span>
+              </div>
+              <div class="suggestion-text">Real-time hardware stats, CPU %, RAM %, and disk partition usage</div>
+            </div>
+            <div class="suggestion-card" onclick="applySuggestion('Show top running processes consuming the most RAM')">
+              <div class="suggestion-header">
+                <span>⚙️ Process Manager</span>
+              </div>
+              <div class="suggestion-text">Inspect active applications and terminate memory hogs or hung tasks</div>
+            </div>
+            <div class="suggestion-card" onclick="applySuggestion('Search for recent files on my PC')">
+              <div class="suggestion-header">
+                <span>🔍 Search PC Files</span>
+              </div>
+              <div class="suggestion-text">Locate files, inspect project files, or read code across drives</div>
+            </div>
+            <div class="suggestion-card" onclick="applySuggestion('Run PowerShell to check network status and system uptime')">
+              <div class="suggestion-header">
+                <span>⚡ PowerShell & Shell</span>
+              </div>
+              <div class="suggestion-text">Execute scripts, check network adapters, and run system diagnostics</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Messages Thread -->
+        <div class="message-thread" id="message-thread"></div>
+      </div>
+
+      <!-- Live Floating Screen PiP Widget (Collapsible) -->
+      <div class="screen-pip-panel" id="screen-pip-panel" style="display:none;">
+        <div class="pip-header">
+          <span>Desktop Live Preview</span>
+          <div class="pip-actions">
+            <button class="pip-close-btn" id="pip-close-btn">×</button>
+          </div>
+        </div>
+        <div class="pip-body">
+          <img id="pip-screen-img" alt="Screen Mirror" />
+        </div>
+      </div>
+
+      <!-- Bottom Prompt Input Bar (ChatGPT floating pill style) -->
+      <div class="prompt-container">
+        <div class="prompt-box">
+          <div class="prompt-tools">
+            <button class="prompt-tool-btn" id="btn-quick-screenshot" title="Quick Screenshot">
+              <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+            </button>
+            <button class="prompt-tool-btn" id="btn-quick-win" title="Press Win Key">
+              <span>🪟</span>
+            </button>
+          </div>
+
+          <textarea 
+            id="prompt-textarea" 
+            placeholder="Message OS Agent or instruct an action..." 
+            rows="1"></textarea>
+
+          <div class="prompt-actions">
+            <button class="send-btn" id="send-btn" disabled title="Send message">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="12" y1="19" x2="12" y2="5"></line>
+                <polyline points="5 12 12 5 19 12"></polyline>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <!-- Permission Selection Dropdown Right Below Textbox -->
+        <div class="prompt-permission-bar">
+          <div class="perm-control-group">
+            <div class="perm-badge-label">
+              <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>
+              <span>Permission:</span>
+            </div>
+            
+            <div class="perm-dropdown-container">
+              <select id="permission-select" class="perm-dropdown" title="Set OS Agent Permission Mode (Applies to actions once without repetitive popups)">
+                <option value="full_access" selected>⚡ Full Access (Grant Once — Auto-Execute)</option>
+                <option value="balanced">🛡️ Balanced (Safe Auto-Run, Prompt High-Risk)</option>
+                <option value="ask_permission">🔒 Ask Every Step (Strict Manual Confirmation)</option>
+                <option value="read_only">👁️ Read-Only (Inspect &amp; Preview Only)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="perm-status-indicator" id="perm-status-indicator">
+            <span class="perm-dot" id="perm-dot"></span>
+            <span id="perm-status-text">Granted Once (Autonomous)</span>
+          </div>
+        </div>
+
+        <div class="prompt-footnote">
+          OS Agent has direct system control via Python FastAPI. Powered by NVIDIA NIM.
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <!-- QR CODE MODAL FOR PHONE PAIRING -->
+  <div class="modal-backdrop" id="qr-modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <div class="modal-icon">📱</div>
+          <div>
+            <h3>Connect Phone Remote</h3>
+            <p>Virtual Trackpad, Live Screen, and NVIDIA NIM LLM Textbox</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal('qr-modal')">×</button>
+      </div>
+
+      <div class="modal-body text-center">
+        <div class="qr-container">
+          <div id="qr-canvas-wrapper" class="qr-canvas-wrapper">
+            <canvas id="qr-canvas"></canvas>
+          </div>
+        </div>
+
+        <div class="ip-info-box">
+          <div class="ip-label">Connect on the same Wi-Fi network:</div>
+          <div class="ip-url-row">
+            <code id="remote-url-display">http://192.168.1.1:8000/remote</code>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-url">Copy</button>
+          </div>
+        </div>
+
+        <div class="connection-status-pill" id="modal-conn-pill">
+          <span class="pulse-dot"></span>
+          <span id="modal-conn-status-text">Waiting for phone to scan...</span>
+        </div>
+
+        <div class="pairing-instructions">
+          <div class="step-item">
+            <span class="step-num">1</span>
+            <span>Connect your phone to the same Wi-Fi / local network</span>
+          </div>
+          <div class="step-item">
+            <span class="step-num">2</span>
+            <span>Scan the QR code with your phone camera or browser</span>
+          </div>
+          <div class="step-item">
+            <span class="step-num">3</span>
+            <span>Enjoy instant virtual trackpad, live screen & voice/text agent</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="openRemoteInBrowser()">Open in Desktop Browser to Test</button>
+        <button class="btn btn-secondary" onclick="closeModal('qr-modal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div class="modal-backdrop" id="settings-modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title-row">
+          <div class="modal-icon">⚙️</div>
+          <div>
+            <h3>Settings & Configuration</h3>
+            <p>Configure NVIDIA NIM API and OS Streaming</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal('settings-modal')">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="input-api-key">NVIDIA NIM API Key</label>
+          <div class="password-input-row">
+            <input type="password" id="input-api-key" placeholder="nvapi-..." />
+            <button class="btn btn-secondary btn-sm" id="btn-toggle-key-vis">Show</button>
+          </div>
+          <small class="form-hint">Obtain your API key from <a href="https://build.nvidia.com" target="_blank" style="color:var(--accent);">build.nvidia.com</a>. Stored locally in backend/.env.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="select-default-model">Default LLM Model</label>
+          <select id="select-default-model" class="form-select">
+            <option value="meta/llama-3.3-70b-instruct">meta/llama-3.3-70b-instruct</option>
+            <option value="nvidia/llama-3.1-nemotron-70b-instruct">nvidia/llama-3.1-nemotron-70b-instruct</option>
+            <option value="deepseek-ai/deepseek-r1">deepseek-ai/deepseek-r1</option>
+            <option value="mistralai/mistral-large-2-instruct">mistralai/mistral-large-2-instruct</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="range-stream-fps">Phone Screen Stream FPS: <span id="val-stream-fps">15</span> fps</label>
+          <input type="range" id="range-stream-fps" min="5" max="30" value="15" />
+        </div>
+
+        <div class="form-group">
+          <label for="range-stream-quality">Stream Quality: <span id="val-stream-quality">60</span>%</label>
+          <input type="range" id="range-stream-quality" min="30" max="95" value="60" />
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeModal('settings-modal')">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-settings">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Local QR Generator Library (works 100% offline) -->
+  <script src="qrious.min.js"></script>
+  <!-- Main Desktop App Logic -->
+  <script src="app.js"></script>
+</body>
+</html>
