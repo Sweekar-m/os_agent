@@ -15,21 +15,17 @@ logger.setLevel(logging.INFO)
 # Known binary locations
 POTENTIAL_CODEX_PATHS = [
     Path(r"C:\Users\sweek\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"),
-    Path(r"C:\Users\sweek\.local\bin\fcc-codex.exe"),
     Path(r"C:\Users\sweek\AppData\Local\OpenAI\Codex\bin\9691020b546a15b2\codex.exe")
 ]
 
 def find_codex_binary() -> Optional[str]:
-    """Finds the installed codex or fcc-codex binary."""
+    """Finds the installed official OpenAI Codex binary."""
     for p in POTENTIAL_CODEX_PATHS:
         if p.exists() and p.is_file():
             return str(p)
     which_codex = shutil.which("codex")
     if which_codex:
         return which_codex
-    which_fcc = shutil.which("fcc-codex")
-    if which_fcc:
-        return which_fcc
     return None
 
 class CodexRuntime:
@@ -42,7 +38,7 @@ class CodexRuntime:
         return {
             "available": binary is not None,
             "binary_path": binary,
-            "runtime_type": "official_codex_cli" if (binary and "OpenAI" in binary) else "fcc_codex",
+            "runtime_type": "official_codex_cli" if binary else "not_installed",
             "active_tasks_count": len(self.active_processes)
         }
 

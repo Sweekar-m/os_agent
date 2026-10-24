@@ -1,7 +1,7 @@
 // Backend API Base URL
 const API_BASE = 'http://localhost:8000';
 
-let currentModel = 'meta/llama-3.2-11b-vision-instruct';
+let currentModel = 'nvidia/nemotron-3.5-lightning-30b-a3b';
 let chatHistory = [];
 let isGenerating = false;
 let phoneConnected = false;
@@ -30,6 +30,26 @@ const permDot = document.getElementById('perm-dot');
 const permStatusText = document.getElementById('perm-status-text');
 const permStatusIndicator = document.getElementById('perm-status-indicator');
 
+// Agent Status Pills
+const agentPillBrowser = document.getElementById('agent-pill-browser');
+const agentPillFile = document.getElementById('agent-pill-file');
+const agentPillSystem = document.getElementById('agent-pill-system');
+const agentPillVision = document.getElementById('agent-pill-vision');
+
+// Emergency Stop
+const btnEmergencyStop = document.getElementById('btn-emergency-stop');
+const emergencyStopText = document.getElementById('emergency-stop-text');
+let isEmergencyStopped = false;
+
+// Speech: STT & TTS
+const btnDesktopMic = document.getElementById('btn-desktop-mic');
+const micIcon = document.getElementById('mic-icon');
+const btnDesktopTts = document.getElementById('btn-desktop-tts');
+const ttsIcon = document.getElementById('tts-icon');
+let speechRecognition = null;
+let isListening = false;
+let ttsEnabled = localStorage.getItem('os_agent_tts') !== 'false';
+
 // Status & Remote
 const phoneStatusDot = document.getElementById('phone-status-dot');
 const phoneStatusBadge = document.getElementById('phone-status-badge');
@@ -44,9 +64,13 @@ const btnCopyUrl = document.getElementById('btn-copy-url');
 const settingsModal = document.getElementById('settings-modal');
 const btnOpenSettings = document.getElementById('btn-open-settings');
 const btnSettingsFooter = document.getElementById('btn-settings-footer');
+const selectLlmProvider = document.getElementById('select-llm-provider');
 const inputApiKey = document.getElementById('input-api-key');
 const btnToggleKeyVis = document.getElementById('btn-toggle-key-vis');
-const selectDefaultModel = document.getElementById('select-default-model');
+const inputBaseUrl = document.getElementById('input-base-url');
+const inputChatModel = document.getElementById('input-chat-model');
+const inputVisionModel = document.getElementById('input-vision-model');
+const settingsPairingPin = document.getElementById('settings-pairing-pin');
 const rangeStreamFps = document.getElementById('range-stream-fps');
 const valStreamFps = document.getElementById('val-stream-fps');
 const rangeStreamQuality = document.getElementById('range-stream-quality');
@@ -67,6 +91,9 @@ const btnQuickWin = document.getElementById('btn-quick-win');
 document.addEventListener('DOMContentLoaded', () => {
   initEventListeners();
   checkBackendStatus();
+  initAgentStatusPolling();
+  initEmergencyStop();
+  initSpeech();
   loadSettings();
   initRemotePolling();
 });
@@ -185,14 +212,17 @@ function initEventListeners() {
   });
 }
 
-// --- Status & Settings ---
+// --- Status, Agents & Emergency Stop ---
 async function checkBackendStatus() {
   try {
     const res = await fetch(`${API_BASE}/api/status`);
     if (res.ok) {
       const data = await res.json();
+      if (data.emergency_stopped) {
+        setEmergencyStopUI(true);
+      }
       if (data.has_api_key) {
-        footerApiStatus.textContent = 'NVIDIA NIM Active';
+        footerApiStatus.textContent = `${(data.provider || 'LLM').toUpperCase()} Active`;
         footerApiStatus.style.color = 'var(--accent)';
       } else {
         footerApiStatus.textContent = 'API Key Required';
@@ -205,22 +235,245 @@ async function checkBackendStatus() {
   }
 }
 
+function initAgentStatusPolling() {
+  fetchAgentStatus();
+  setInterval(fetchAgentStatus, 4000);
+}
+
+async function fetchAgentStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/agents/status`);
+    if (res.ok) {
+      const data = await res.json();
+      if (agentPillBrowser && data.browser_agent) {
+        const count = data.browser_agent.open_browsers_count || 0;
+        agentPillBrowser.title = `Browser Agent: ${count} browser window(s) open (Existing Chrome/Edge)`;
+      }
+      if (agentPillFile && data.file_agent) {
+        agentPillFile.title = `File Agent: Workspace ready at ${data.file_agent.workspace}`;
+      }
+      if (agentPillSystem && data.system_agent) {
+        agentPillSystem.title = `System Agent: Windows OS with ${data.system_agent.cpu_count || 'multi'} cores`;
+      }
+      if (agentPillVision && data.vision_agent) {
+        const win = data.vision_agent.active_window || 'Desktop';
+        agentPillVision.title = `Vision Agent: Active [${win}] | Res ${data.vision_agent.screen_dimensions.join('x')}`;
+      }
+    }
+  } catch (err) {
+    // Backend offline or reconnecting
+  }
+}
+
+function initEmergencyStop() {
+  if (!btnEmergencyStop) return;
+
+  btnEmergencyStop.addEventListener('click', async () => {
+    if (isEmergencyStopped) {
+      // Clear emergency stop
+      try {
+        const res = await fetch(`${API_BASE}/api/emergency-stop/clear`, { method: 'POST' });
+        if (res.ok) {
+          setEmergencyStopUI(false);
+          appendMessage('assistant', '✅ Emergency Stop cleared. Agent operations resumed.');
+        }
+      } catch (err) {
+        alert('Failed to clear emergency stop: ' + err.message);
+      }
+    } else {
+      // Trigger emergency stop
+      if (!confirm('🛑 Trigger Emergency Stop? This immediately terminates active agent operations and blocks further execution.')) {
+        return;
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/emergency-stop`, { method: 'POST' });
+        if (res.ok) {
+          setEmergencyStopUI(true);
+          appendMessage('assistant', '🛑 EMERGENCY STOP ACTIVATED: All agent actions halted. Approvals cancelled.');
+        }
+      } catch (err) {
+        alert('Failed to activate emergency stop: ' + err.message);
+      }
+    }
+  });
+}
+
+function setEmergencyStopUI(stopped) {
+  isEmergencyStopped = stopped;
+  if (!btnEmergencyStop) return;
+  if (stopped) {
+    btnEmergencyStop.classList.add('stopped');
+    if (emergencyStopText) emergencyStopText.textContent = 'STOPPED (Resume)';
+  } else {
+    btnEmergencyStop.classList.remove('stopped');
+    if (emergencyStopText) emergencyStopText.textContent = 'Emergency Stop';
+  }
+}
+
+// --- Speech: STT & TTS ---
+function initSpeech() {
+  // TTS Button
+  if (btnDesktopTts) {
+    if (!ttsEnabled) btnDesktopTts.classList.add('muted');
+    btnDesktopTts.addEventListener('click', () => {
+      ttsEnabled = !ttsEnabled;
+      localStorage.setItem('os_agent_tts', ttsEnabled ? 'true' : 'false');
+      btnDesktopTts.classList.toggle('muted', !ttsEnabled);
+      if (ttsIcon) ttsIcon.textContent = ttsEnabled ? '🔊' : '🔇';
+      if (!ttsEnabled) {
+        stopDesktopSpeech();
+      }
+    });
+  }
+
+  // STT Microphone Button
+  if (btnDesktopMic) {
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRec) {
+      speechRecognition = new SpeechRec();
+      speechRecognition.continuous = false;
+      speechRecognition.interimResults = false;
+      speechRecognition.lang = 'en-US';
+
+      speechRecognition.onresult = (e) => {
+        const transcript = e.results[0][0].transcript;
+        promptTextarea.value = transcript;
+        promptTextarea.dispatchEvent(new Event('input'));
+        stopListening();
+        // Focus prompt
+        promptTextarea.focus();
+      };
+
+      speechRecognition.onerror = (e) => {
+        console.warn('[STT Error]', e);
+        stopListening();
+      };
+
+      speechRecognition.onend = () => {
+        stopListening();
+      };
+
+      btnDesktopMic.addEventListener('click', () => {
+        if (isListening) {
+          speechRecognition.stop();
+          stopListening();
+        } else {
+          try {
+            speechRecognition.start();
+            isListening = true;
+            btnDesktopMic.classList.add('listening');
+          } catch (err) {
+            console.error('Speech recognition start failed', err);
+            stopListening();
+          }
+        }
+      });
+    } else {
+      btnDesktopMic.title = 'Speech-to-Text not supported in this browser';
+      btnDesktopMic.style.opacity = '0.5';
+    }
+  }
+}
+
+function stopListening() {
+  isListening = false;
+  if (btnDesktopMic) btnDesktopMic.classList.remove('listening');
+}
+
+let currentDesktopAudio = null;
+let lastDesktopSpokenText = '';
+let lastDesktopSpokenTime = 0;
+
+function stopDesktopSpeech() {
+  if (currentDesktopAudio) {
+    try {
+      currentDesktopAudio.pause();
+      currentDesktopAudio.currentTime = 0;
+    } catch (e) {}
+    currentDesktopAudio = null;
+  }
+  if (window.speechSynthesis) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {}
+  }
+}
+
+function speakText(text, audioUrl = null) {
+  if (!ttsEnabled || !text) return;
+
+  const now = Date.now();
+  const cleanNorm = text.trim().toLowerCase();
+  // Deduplicate recent speech within 15 seconds
+  if (cleanNorm === lastDesktopSpokenText && (now - lastDesktopSpokenTime) < 15000) {
+    console.log('[Desktop TTS] Skipping duplicate spoken text');
+    return;
+  }
+  lastDesktopSpokenText = cleanNorm;
+  lastDesktopSpokenTime = now;
+
+  // Interrupt previous speech
+  stopDesktopSpeech();
+
+  if (audioUrl) {
+    try {
+      const fullAudioUrl = audioUrl.startsWith('http') ? audioUrl : `${API_BASE}${audioUrl}`;
+      currentDesktopAudio = new Audio(fullAudioUrl);
+      currentDesktopAudio.play().catch((err) => {
+        console.warn('[Desktop Neural Audio Error, falling back to Web Speech]', err);
+        speakDesktopWebSpeech(text);
+      });
+      return;
+    } catch (err) {
+      console.warn('[Desktop Audio init error]', err);
+    }
+  }
+
+  speakDesktopWebSpeech(text);
+}
+
+function speakDesktopWebSpeech(text) {
+  if (!ttsEnabled || !window.speechSynthesis || !text) return;
+  try {
+    const clean = text.replace(/```[\s\S]*?```/g, '').replace(/[*_#`[\]()]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+    const utterance = new SpeechSynthesisUtterance(clean.substring(0, 300));
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    window.speechSynthesis.speak(utterance);
+  } catch (err) {
+    console.warn('[TTS Error]', err);
+  }
+}
+
 async function loadSettings() {
   try {
     const res = await fetch(`${API_BASE}/api/settings`);
     if (res.ok) {
       const data = await res.json();
-      if (data.has_api_key) {
+      if (selectLlmProvider && data.llm_provider) {
+        selectLlmProvider.value = data.llm_provider;
+      }
+      if (inputApiKey && data.has_api_key) {
         inputApiKey.placeholder = `Configured (${data.masked_key})`;
       }
-      if (data.default_model) {
-        selectDefaultModel.value = data.default_model;
+      if (inputBaseUrl && data.llm_base_url) {
+        inputBaseUrl.value = data.llm_base_url;
       }
-      if (data.stream_fps) {
+      if (inputChatModel && data.llm_model) {
+        inputChatModel.value = data.llm_model;
+      }
+      if (inputVisionModel && data.llm_vision_model) {
+        inputVisionModel.value = data.llm_vision_model;
+      }
+      if (settingsPairingPin && data.remote_pairing_pin) {
+        settingsPairingPin.textContent = data.remote_pairing_pin;
+      }
+      if (rangeStreamFps && data.stream_fps) {
         rangeStreamFps.value = data.stream_fps;
         valStreamFps.textContent = data.stream_fps;
       }
-      if (data.stream_quality) {
+      if (rangeStreamQuality && data.stream_quality) {
         rangeStreamQuality.value = data.stream_quality;
         valStreamQuality.textContent = data.stream_quality;
       }
@@ -232,13 +485,18 @@ async function loadSettings() {
 
 async function saveSettings() {
   const payload = {
-    default_model: selectDefaultModel.value,
     stream_fps: parseInt(rangeStreamFps.value),
     stream_quality: parseInt(rangeStreamQuality.value)
   };
 
+  if (selectLlmProvider) payload.llm_provider = selectLlmProvider.value;
+  if (inputBaseUrl && inputBaseUrl.value.trim()) payload.llm_base_url = inputBaseUrl.value.trim();
+  if (inputChatModel && inputChatModel.value.trim()) payload.llm_model = inputChatModel.value.trim();
+  if (inputVisionModel && inputVisionModel.value.trim()) payload.llm_vision_model = inputVisionModel.value.trim();
+
   const keyVal = inputApiKey.value.trim();
   if (keyVal) {
+    payload.llm_api_key = keyVal;
     payload.nvidia_api_key = keyVal;
   }
 
@@ -382,6 +640,9 @@ async function handleSendMessage() {
   const text = promptTextarea.value.trim();
   if (!text || isGenerating) return;
 
+  // Interrupt any ongoing speech immediately when user submits new input
+  stopDesktopSpeech();
+
   // Hide empty state
   emptyState.style.display = 'none';
 
@@ -412,11 +673,15 @@ async function handleSendMessage() {
     const data = await res.json();
     assistantBubble.classList.remove('thinking');
 
-    if (data.error) {
-      assistantBubble.textContent = `❌ Error: ${data.error}`;
-      chatHistory.push({ role: 'assistant', content: data.error });
+    const errDetail = data.error || data.detail || (!res.ok ? `HTTP ${res.status}: ${res.statusText || 'Server Error'}` : null);
+    if (errDetail) {
+      assistantBubble.textContent = `❌ Error: ${errDetail}`;
+      chatHistory.push({ role: 'assistant', content: errDetail });
     } else {
       let content = data.content || '';
+      if (!content && (!data.actions || data.actions.length === 0)) {
+        content = "*(Completed with no text output)*";
+      }
       assistantBubble.innerHTML = formatMarkdown(content);
 
       // Render interactive PPT cards if recent presentations are returned
@@ -459,6 +724,12 @@ async function handleSendMessage() {
       }
 
       chatHistory.push({ role: 'assistant', content: content });
+
+      // Speak assistant response summary with neural audio if TTS is enabled
+      const textToSpeak = data.spoken_summary || content;
+      if (textToSpeak) {
+        speakText(textToSpeak, data.audio_url);
+      }
     }
   } catch (err) {
     assistantBubble.classList.remove('thinking');

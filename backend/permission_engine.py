@@ -20,13 +20,19 @@ from db import (
 logger = logging.getLogger("permission_engine")
 logger.setLevel(logging.INFO)
 
-# Command risk categories
+# Command & Agent Action categories
 class ActionCategory:
     SAFE_READ = "SAFE_READ"
     BUILD_TEST = "BUILD_TEST"
     PACKAGE_INSTALL = "PACKAGE_INSTALL"
+    FILE_READ = "FILE_READ"
     FILE_WRITE = "FILE_WRITE"
     FILE_DELETE = "FILE_DELETE"
+    BROWSER_ACTION = "BROWSER_ACTION"
+    SYSTEM_LAUNCH = "SYSTEM_LAUNCH"
+    SYSTEM_KILL = "SYSTEM_KILL"
+    SYSTEM_COMMAND = "SYSTEM_COMMAND"
+    VISION_CAPTURE = "VISION_CAPTURE"
     GIT_WRITE = "GIT_WRITE"
     NETWORK_CALL = "NETWORK_CALL"
     HIGH_RISK_SYSTEM = "HIGH_RISK_SYSTEM"
@@ -79,6 +85,33 @@ class PermissionEngine:
         self._full_access_grants: Dict[str, bool] = {}
         # Pending approval futures: approval_id -> asyncio.Future
         self._pending_futures: Dict[str, asyncio.Future] = {}
+        # Emergency stop flag: halts all execution immediately
+        self._emergency_stopped: bool = False
+
+    def trigger_emergency_stop(self) -> Dict[str, Any]:
+        """Engages system-wide emergency stop, blocking all in-flight and future actions."""
+        self._emergency_stopped = True
+        logger.warning("EMERGENCY STOP TRIGGERED: All actions blocked.")
+        # Cancel all pending approval futures
+        for appr_id, fut in list(self._pending_futures.items()):
+            if not fut.done():
+                fut.set_result((PermissionDecision.CANCEL, {"reason": "Emergency stop triggered"}))
+        return {
+            "emergency_stopped": True,
+            "message": "Emergency stop activated. All active operations halted and future actions blocked."
+        }
+
+    def clear_emergency_stop(self) -> Dict[str, Any]:
+        """Disengages system-wide emergency stop, returning to normal permission governance."""
+        self._emergency_stopped = False
+        logger.info("Emergency stop cleared.")
+        return {
+            "emergency_stopped": False,
+            "message": "Emergency stop cleared. Normal permission governance restored."
+        }
+
+    def is_emergency_stopped(self) -> bool:
+        return self._emergency_stopped
 
     def reset_session(self, task_id: str):
         self._session_grants.pop(task_id, None)
@@ -201,15 +234,29 @@ class PermissionEngine:
         Evaluates whether an action is authorized under current grants.
         Returns (is_permitted, grant_source).
         """
+        if self._emergency_stopped:
+            return False, "emergency_stop_active"
+
+        # Critical destructive actions ALWAYS require individual approval
+        if category in [ActionCategory.HIGH_RISK_SYSTEM, ActionCategory.FILE_DELETE, ActionCategory.SYSTEM_KILL]:
+            # Only allow if explicitly granted for this session
+            task_sessions = self._session_grants.get(task_id, set())
+            if category in task_sessions:
+                return True, f"session_grant({category})"
+            return False, None
+
         # Autonomous / Full Access grant for this task
         if self._full_access_grants.get(task_id, False) or permission_mode == "full_access":
-            # Still strictly reject HIGH_RISK_SYSTEM unless individually approved
-            if category != ActionCategory.HIGH_RISK_SYSTEM:
-                return True, "task_full_access"
+            return True, "task_full_access"
 
-        # Safe read operations are allowed by default in balanced and full_access modes
-        if category == ActionCategory.SAFE_READ and permission_mode in ["balanced", "full_access"]:
-            return True, "safe_read_policy"
+        # Safe read and observation operations are allowed by default in balanced mode
+        safe_defaults = [ActionCategory.SAFE_READ, ActionCategory.FILE_READ, ActionCategory.VISION_CAPTURE]
+        if category in safe_defaults and permission_mode in ["balanced", "full_access"]:
+            return True, "safe_observation_policy"
+
+        # Non-destructive browser and app launch operations allowed in balanced mode
+        if category in [ActionCategory.BROWSER_ACTION, ActionCategory.SYSTEM_LAUNCH] and permission_mode == "balanced":
+            return True, "standard_os_interaction_policy"
 
         # Check active session grants
         task_sessions = self._session_grants.get(task_id, set())
@@ -255,6 +302,9 @@ class PermissionEngine:
         and pauses execution until user responds.
         Returns (decision, decision_meta).
         """
+        if self._emergency_stopped:
+            return PermissionDecision.CANCEL, {"reason": "Emergency stop is active"}
+
         approval_id = f"appr-{uuid.uuid4().hex[:12]}"
         
         # If classification not provided, compute it

@@ -453,13 +453,19 @@ class OSToolkit:
         try:
             if cmd:
                 subprocess.Popen(cmd, shell=True)
+                return {"success": True, "target": target_clean, "status": "launched"}
             elif Path(target_clean).exists():
                 os.startfile(target_clean)
+                return {"success": True, "target": target_clean, "status": "opened"}
             elif target_clean.startswith("http://") or target_clean.startswith("https://"):
                 os.startfile(target_clean)
+                return {"success": True, "target": target_clean, "status": "opened_url"}
             else:
-                subprocess.Popen(f"start {target_clean}", shell=True)
-            return {"success": True, "target": target_clean, "status": "launched"}
+                which_exe = shutil.which(target_clean) or shutil.which(f"{target_clean}.exe")
+                if which_exe:
+                    subprocess.Popen([which_exe])
+                    return {"success": True, "target": target_clean, "status": "launched", "path": which_exe}
+                return {"success": False, "target": target_clean, "error": f"Application or file '{target_clean}' does not exist."}
         except Exception as e:
             return {"success": False, "target": target_clean, "error": str(e)}
 

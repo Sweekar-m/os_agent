@@ -35,6 +35,7 @@ Supported Actions (ONLY WHEN EXPLICITLY REQUESTED):
   - {{"type": "kill_process", "pid": <int>}} or {{"type": "kill_process", "name": "<app_name>"}}
 
 - File & System Operations:
+  - {{"type": "open_file", "path": "<file_path or document name>"}}
   - {{"type": "read_file", "path": "<file_path>", "max_lines": 200}}
   - {{"type": "write_file", "path": "<file_path>", "content": "<content_to_write>", "overwrite": true}}
   - {{"type": "append_file", "path": "<file_path>", "content": "<content_to_append>"}}
@@ -58,8 +59,16 @@ Supported Actions (ONLY WHEN EXPLICITLY REQUESTED):
   - {{"type": "scroll", "dy": <float>}}
   - {{"type": "screenshot"}}
 
+- Browser Operations (Live Chrome, Edge, Brave Sessions):
+  - {{"type": "list_tabs"}} (Enumerate all open tabs in existing browser sessions)
+  - {{"type": "summarize_tabs", "max_tabs": 15}} (Inspect and summarize open browser tabs with live titles, URLs, and readable text)
+  - {{"type": "browser_search", "query": "<search query>"}}
+  - {{"type": "browser_navigate", "url": "<url>"}}
+
 CRITICAL RULES:
 - ZERO HALLUCINATION: Never make up paths like "C:\\Users\\YourUsername\\..." or fabricate command outputs.
+- Never claim you lack access to the filesystem, desktop, or local files, or that you cannot interact with the desktop beyond search or cannot open files. You are a local Windows assistant equipped with a working File Agent and Windows execution tools that can read, write, edit, search, and open files on Windows.
+- Never claim you lack access to live browser tabs, cannot enumerate open tabs, or need the user to paste links or share tab contents. You are equipped with a live Browser Agent that inspects open browser sessions (Chrome, Edge, Brave) and summarizes live tab contents on Windows.
 - NEVER assume the user wants PowerPoint unless they specifically ask for presentations, slides, or PPT.
 - For greetings or general questions: Be friendly, helpful, concise, and conversational without any JSON action blocks."""
 
@@ -107,7 +116,7 @@ class NvidiaNimClient:
                         act_type = act.get("type", "").lower()
                         
                         # In read_only mode, block mutating actions
-                        read_only_allowed = ["system_info", "get_processes", "read_file", "list_dir", "find_file", "get_clipboard", "find_ppts", "inspect_ppt", "screenshot"]
+                        read_only_allowed = ["system_info", "get_processes", "read_file", "list_dir", "find_file", "get_clipboard", "find_ppts", "inspect_ppt", "screenshot", "list_tabs", "get_open_tabs", "summarize_tabs", "summarize_open_tabs"]
                         if permission_mode == "read_only" and act_type not in read_only_allowed:
                             act["status"] = "blocked"
                             act["reason"] = "Blocked by read-only permission setting"
@@ -205,11 +214,35 @@ class NvidiaNimClient:
                             executed.append(act)
 
                         # 6. Applications & Windows
-                        elif act_type in ["open_app", "launch", "open_file"]:
-                            app_target = act.get("app") or act.get("target") or act.get("name", "")
-                            res = os_toolkit.open_app_or_file(app_target)
+                        elif act_type in ["open_file", "launch_file"]:
+                            file_target = act.get("path") or act.get("file") or act.get("target") or act.get("name") or act.get("app", "")
+                            from agents.file_agent import file_agent
+                            res = file_agent.open_file(file_target)
                             act["result"] = res
+                            act["file_found"] = res.get("file_found", False)
+                            act["open_requested"] = res.get("open_requested", True)
+                            act["command_dispatched"] = res.get("command_dispatched", False)
+                            act["visibly_opened"] = res.get("visibly_opened", False)
+                            act["desktop_session"] = res.get("desktop_session", {})
                             act["status"] = "success" if res.get("success") else "error"
+                            executed.append(act)
+
+                        elif act_type in ["open_app", "launch"]:
+                            app_target = act.get("app") or act.get("target") or act.get("name", "")
+                            # If app_target has a document file extension, route to file_agent.open_file
+                            if any(app_target.lower().endswith(ext) for ext in [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".pptx", ".csv"]):
+                                from agents.file_agent import file_agent
+                                res = file_agent.open_file(app_target)
+                                act["result"] = res
+                                act["file_found"] = res.get("file_found", False)
+                                act["open_requested"] = res.get("open_requested", True)
+                                act["command_dispatched"] = res.get("command_dispatched", False)
+                                act["visibly_opened"] = res.get("visibly_opened", False)
+                                act["status"] = "success" if res.get("success") else "error"
+                            else:
+                                res = os_toolkit.open_app_or_file(app_target)
+                                act["result"] = res
+                                act["status"] = "success" if res.get("success") else "error"
                             executed.append(act)
 
                         # 7. Desktop GUI & Input Automation
@@ -239,6 +272,36 @@ class NvidiaNimClient:
                             w, h = get_screen_dimensions()
                             act["status"] = "captured"
                             act["resolution"] = f"{w}x{h}"
+                            executed.append(act)
+
+                        # 7b. Live Browser Agent Tools
+                        elif act_type in ["list_tabs", "get_open_tabs"]:
+                            from agents.browser_agent import browser_agent
+                            tabs_res = browser_agent.get_open_tabs(act.get("hwnd"))
+                            act["results"] = tabs_res
+                            act["status"] = "success" if tabs_res.get("success") else "error"
+                            act["verification"] = {"status": "verified" if tabs_res.get("success") else "failed"}
+                            executed.append(act)
+                        elif act_type in ["summarize_tabs", "summarize_open_tabs"]:
+                            from agents.browser_agent import browser_agent
+                            sum_res = await browser_agent.summarize_open_tabs(act.get("hwnd"), max_tabs=int(act.get("max_tabs", 15)))
+                            act["results"] = sum_res
+                            act["status"] = "success" if sum_res.get("success") else "error"
+                            act["verification"] = {"status": "verified" if sum_res.get("success") else "failed"}
+                            executed.append(act)
+                        elif act_type in ["browser_search", "search_browser"]:
+                            from agents.browser_agent import browser_agent
+                            s_res = await browser_agent.search(act.get("query", ""))
+                            act["results"] = s_res
+                            act["status"] = "success" if s_res.get("success") else "error"
+                            act["verification"] = {"status": "verified" if s_res.get("success") else "failed"}
+                            executed.append(act)
+                        elif act_type in ["browser_navigate", "navigate_browser"]:
+                            from agents.browser_agent import browser_agent
+                            nav_res = await browser_agent.navigate(act.get("url", ""))
+                            act["results"] = nav_res
+                            act["status"] = "success" if nav_res.get("success") else "error"
+                            act["verification"] = {"status": "verified" if nav_res.get("success") else "failed"}
                             executed.append(act)
 
                         # 8. Document & PowerPoint Tools (If requested)
@@ -407,11 +470,11 @@ class NvidiaNimClient:
                 if not save_dir.exists():
                     save_dir = Path.home() / "Desktop"
                 save_path = str(save_dir / "Project_A_Autonomous_OS_Agent.pptx")
-                title = "FCC-Codex Autonomous OS Agent (Project A)"
+                title = "Codex Autonomous OS Agent (Project A)"
 
                 slides_data = [
                     {
-                        "title": "FCC-Codex Autonomous OS Agent",
+                        "title": "Codex Autonomous OS Agent",
                         "bullets": [
                             "Desktop-First Autonomous AI Operating Agent",
                             "Real-Time OS Automation & Multi-Agent Verification",
@@ -430,12 +493,12 @@ class NvidiaNimClient:
                         "type": "content"
                     },
                     {
-                        "title": "System Architecture & Multi-Agent Pipeline",
+                        "title": "System Architecture & Execution Pipeline",
                         "bullets": [
                             "Planning AI translates natural language requests into structured Pydantic task plans",
-                            "Real Codex CLI runtime executes commands, code edits, and tools in isolated sandbox",
+                            "Official Codex CLI runtime executes commands, code edits, and tools in isolated sandbox",
                             "Iterative Verifier runs automated tests, builds, and linting checks",
-                            "Real AGY (Antigravity) Reviewer provides independent validation before task completion"
+                            "Continuous recovery engine repairs verification failures autonomously"
                         ],
                         "type": "content"
                     },
@@ -491,9 +554,9 @@ class NvidiaNimClient:
                     f"🎨 **Theme**: Dark Tech (Navy + Cyan)\n"
                     f"📑 **Total Slides**: {res.get('total_slides', 7)} slides covering Architecture, Governance, Telemetry, and UI\n\n"
                     f"### 📑 Presentation Outline:\n"
-                    f"1. **Title**: FCC-Codex Autonomous OS Agent (Project A)\n"
+                    f"1. **Title**: Codex Autonomous OS Agent (Project A)\n"
                     f"2. **Vision**: Executive Summary & Core Objectives\n"
-                    f"3. **Architecture**: Planning AI, Codex CLI, Iterative Verifier, AGY Reviewer\n"
+                    f"3. **Architecture**: Planning AI, Codex CLI, Iterative Verifier\n"
                     f"4. **Governance**: Permission Engine & Security Boundaries\n"
                     f"5. **OS Power**: Hardware Telemetry, Process Control & PowerShell\n"
                     f"6. **User Experience**: ChatGPT Desktop UI, Live PiP & Phone Remote\n"
@@ -1030,88 +1093,42 @@ class NvidiaNimClient:
 
     def detect_conversational_intent(self, user_msg: str) -> Optional[Dict[str, Any]]:
         """
-        Handles greetings, polite conversation, small talk, and general bot inquiries warmly and naturally
-        without triggering robotic actions, unwanted JSON blocks, or hardware telemetry.
+        Directly handles conversational greetings, small talk, and identity inquiries.
         """
-        msg = user_msg.strip()
-        msg_lower = msg.lower()
-        clean = re.sub(r"[^\w\s]", "", msg_lower).strip()
-
-        # If the user is asking for an actual OS or PPT task in the same message, let task routers handle it
-        task_indicators = [
-            "ppt", "presentation", "slide", "slides", "cpu", "ram", "memory", "telemetry",
-            "process", "kill", "powershell", "terminal", "command", "read file", "write file",
-            "disk", "storage", "clipboard", "open app", "screenshot", "taskmgr"
-        ]
-        if any(ti in msg_lower for ti in task_indicators):
+        if not user_msg:
             return None
+        msg_l = user_msg.lower().strip()
+        clean = re.sub(r"[^\w\s]", "", msg_l).strip()
 
-        # 1. Direct Greetings
-        greetings = {
-            "hi", "hey", "hello", "hiya", "howdy", "yo", "sup", "heyy", "heyyy", "heya",
-            "hello there", "hey there", "hi there", "greetings", "good morning",
-            "good afternoon", "good evening", "good day", "morning", "evening"
-        }
-        if clean in greetings or re.match(r"^(?:hi|hey|hello|hiya|yo|howdy)\s+(?:there|bot|ai|assistant|friend|everyone)$", clean):
+        greetings = ["hey", "hi", "hello", "good morning", "good evening", "good afternoon", "yo", "sup", "heyy", "hi there", "hey there"]
+        if clean in greetings or any(clean == g for g in greetings):
             return {
                 "role": "assistant",
-                "content": "Hey! 👋 How can I help you today? Whether you want to chat, brainstorm ideas, write code, or have me perform tasks on your Windows PC or build a presentation, I'm here for you! What's on your mind?",
+                "content": "Hey there! How can I help you today?",
                 "actions": [],
                 "type": "conversation"
             }
 
-        # 2. Status inquiries
-        status_checks = {
-            "how are you", "how are you doing", "hows it going", "how is it going",
-            "whats up", "what is up", "how do you do", "are you there", "you there",
-            "how are things", "how have you been"
-        }
-        if clean in status_checks:
+        if any(w in msg_l for w in ["how are you", "how are you doing", "how are things"]):
             return {
                 "role": "assistant",
-                "content": "I'm doing great, thanks for asking! 😊 How are you doing? Let me know whatever you'd like to talk about or work on.",
+                "content": "I'm doing well, ready to help you operate your PC! What would you like to do?",
                 "actions": [],
                 "type": "conversation"
             }
 
-        # 3. Identity & Capabilities
-        identity_checks = {
-            "who are you", "what are you", "what can you do", "what are your capabilities",
-            "what can you help me with", "introduce yourself", "tell me about yourself", "help",
-            "what are you capable of"
-        }
-        if clean in identity_checks:
+        if clean in ["who are you", "what are you", "what can you do"]:
             return {
                 "role": "assistant",
-                "content": (
-                    "I'm your AI assistant and Windows OS companion! 🤖\n\n"
-                    "I can help you with:\n"
-                    "• 💬 **Chatting & Brainstorming**: Discuss any topic, answer questions, write essays or creative content.\n"
-                    "• 💻 **Code & Debugging**: Write and explain code across Python, JavaScript, Rust, C++, and more.\n"
-                    "• 🖥️ **Windows OS Automation**: Check hardware telemetry, inspect processes, read/edit files, and run PowerShell commands.\n"
-                    "• 📊 **PowerPoint Presentations**: Generate complete, professional slide decks on any topic.\n\n"
-                    "What would you like to explore today?"
-                ),
+                "content": "I'm OS Agent, your Windows desktop assistant. I can operate your computer via Browser, File, System, and Vision agents.",
                 "actions": [],
                 "type": "conversation"
             }
 
-        # 4. Gratitude
-        thanks = {"thank you", "thanks", "thanks a lot", "thank you so much", "thx", "ty", "cheers", "appreciate it"}
-        if clean in thanks:
+        if any(w in msg_l for w in ["thank you", "thanks", "thx", "bye", "goodbye"]):
             return {
                 "role": "assistant",
-                "content": "You're very welcome! Always happy to help. Let me know if you need anything else! 😊",
-                "actions": [],
-                "type": "conversation"
-            }
-
-        # 5. Farewells
-        farewells = {"bye", "goodbye", "see you", "see ya", "cya", "have a good day", "good night", "take care"}
-        if clean in farewells:
-            return {
-                "role": "assistant",
-                "content": "Goodbye! Have a great day, and feel free to reach out whenever you're back! 👋",
+                "content": "You're very welcome! Let me know if you need anything else.",
                 "actions": [],
                 "type": "conversation"
             }

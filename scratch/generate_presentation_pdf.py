@@ -10,7 +10,7 @@ from reportlab.platypus import (
 )
 from reportlab.pdfgen import canvas
 
-PDF_OUTPUT_PATH = Path(r"d:\project_a\FCC_Codex_Autonomous_OS_Agent_Presentation_Guide.pdf")
+PDF_OUTPUT_PATH = Path(r"d:\project_a\Codex_Autonomous_OS_Agent_Presentation_Guide.pdf")
 
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
@@ -37,7 +37,7 @@ class NumberedCanvas(canvas.Canvas):
         # Do not draw on cover page (page 1)
         if self._pageNumber > 1:
             # Header
-            self.drawString(54, 750, "FCC-Codex Autonomous OS Agent — Comprehensive System Architecture & Presentation Guide")
+            self.drawString(54, 750, "Codex Autonomous OS Agent — Comprehensive System Architecture & Presentation Guide")
             self.setStrokeColor(colors.HexColor("#cbd5e1"))
             self.setLineWidth(0.5)
             self.line(54, 742, 612 - 54, 742)
@@ -168,15 +168,15 @@ def build_pdf():
     story = []
 
     # ------------------ COVER / HEADER ------------------
-    story.append(Paragraph("FCC-CODEX AUTONOMOUS OS AGENT", title_style))
+    story.append(Paragraph("CODEX AUTONOMOUS OS AGENT", title_style))
     story.append(Paragraph("System Architecture, Objectives, Technical Code Modifications & Complete Presentation Guide", subtitle_style))
     story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#0d9488"), spaceBefore=0, spaceAfter=14))
 
     meta_table_data = [
         [Paragraph("<b>Target Runtime:</b> Windows 11 Desktop (FastAPI + Tauri/Webview)", body_style),
          Paragraph("<b>Date:</b> October 2026", body_style)],
-        [Paragraph("<b>Primary Implementer:</b> OpenAI Codex CLI 0.144.3 / FCC-Codex", body_style),
-         Paragraph("<b>Independent Auditor:</b> Antigravity CLI 1.2.17 (AGY)", body_style)],
+        [Paragraph("<b>Primary Implementer:</b> OpenAI Codex CLI 0.144.3", body_style),
+         Paragraph("<b>Verification Engine:</b> Iterative Verifier & Recovery Engine", body_style)],
         [Paragraph("<b>Persistence:</b> SQLite WAL (agent.db)", body_style),
          Paragraph("<b>Status:</b> Production-Ready (14/14 Tests Passed)", body_style)]
     ]
@@ -196,7 +196,7 @@ def build_pdf():
     # ------------------ SECTION 1: OBJECTIVES ------------------
     story.append(Paragraph("1. Project Mission & Core Objectives", h1_style))
     story.append(Paragraph(
-        "The objective of the FCC-Codex Autonomous OS Agent is to deliver an intelligent, desktop-first autonomous runtime "
+        "The objective of the Codex Autonomous OS Agent is to deliver an intelligent, desktop-first autonomous runtime "
         "capable of performing <b>approximately 90% of ordinary computer-based development and office productivity workflows independently</b>, "
         "while guaranteeing total human governance through an operating-system-level permission and approval system.",
         body_style
@@ -206,9 +206,8 @@ def build_pdf():
         ("1. High Autonomy Development", "Understand natural-language requests, inspect local repositories, author code, manage dependencies, and verify work without constant micromanagement."),
         ("2. Human-in-the-Loop Security", "Default-deny policy for sensitive commands with 6 explicit, granular approval choices (Allow Once, Allow Session, Allow Project, Allow Full Access, Deny, Cancel Task)."),
         ("3. Genuine Execution (Zero Simulation)", "Never simulate or mock actions. Real files are created on disk, real shell commands run in PowerShell, and real test outcomes govern completion."),
-        ("4. Dual-Agent Checks & Balances", "Codex serves as the primary implementation builder, while the real Antigravity (AGY) agent operates as an independent reviewer and security validator."),
-        ("5. Autonomous Error Recovery", "When unit tests or builds fail, the agent captures the exact traceback, synthesizes a targeted repair plan, patches the code, and re-tests autonomously."),
-        ("6. Cross-Device Pairing", "Control and monitor execution from the PC desktop or remotely from a mobile phone via a local Wi-Fi QR code pairing system with virtual trackpad and live screen mirror.")
+        ("4. Autonomous Error Recovery", "When unit tests or builds fail, the agent captures the exact traceback, synthesizes a targeted repair plan, patches the code, and re-tests autonomously."),
+        ("5. Cross-Device Pairing", "Control and monitor execution from the PC desktop or remotely from a mobile phone via a local Wi-Fi QR code pairing system with virtual trackpad and live screen mirror.")
     ]
 
     for title, desc in objectives:
@@ -238,17 +237,12 @@ def build_pdf():
         [
             Paragraph("<b>Codex Engine</b>", body_style),
             Paragraph("<code>codex_runtime.py</code>", code_style),
-            Paragraph("Spawns official <code>codex.exe</code> / <code>fcc-codex.exe</code> with non-interactive <code>--json</code> streaming. Emits thread, turn, command execution, stdout/stderr, and file change events.", body_style)
+            Paragraph("Spawns official <code>codex.exe</code> with non-interactive <code>--json</code> streaming. Emits thread, turn, command execution, stdout/stderr, and file change events.", body_style)
         ],
         [
             Paragraph("<b>Iterative Verifier</b>", body_style),
             Paragraph("<code>verifier.py</code>", code_style),
             Paragraph("Runs automated test suites (npm test, pytest, python -m unittest). If errors occur, builds targeted recovery prompts for autonomous multi-attempt code repair loops.", body_style)
-        ],
-        [
-            Paragraph("<b>AGY Reviewer</b>", body_style),
-            Paragraph("<code>agy_reviewer.py</code>", code_style),
-            Paragraph("Invokes real <code>agy.EXE</code> in headless print mode to perform independent quality reviews. Returns compliance scores (1–100), verdicts, and recommendations.", body_style)
         ],
         [
             Paragraph("<b>Orchestrator</b>", body_style),
@@ -314,7 +308,7 @@ def build_pdf():
             "Engineered deterministic fallback planning logic for offline or high-availability resiliency."
         ]),
         ("backend/codex_runtime.py (Created)", [
-            "Discovered and integrated official OpenAI Codex binary (C:\\Users\\sweek\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe) and fcc-codex.exe.",
+            "Discovered and integrated official OpenAI Codex binary (C:\\Users\\sweek\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe).",
             "Built execute_task_stream() running non-interactive Codex with --json and stdin=DEVNULL to prevent terminal blocking.",
             "Parses JSONL events: thread.started, turn.started, item.started, item.completed, command_execution, file_change, agent_message.",
             "Added process registry enabling immediate subprocess termination on task cancellation."
@@ -324,11 +318,6 @@ def build_pdf():
             "Built verify_task() evaluating acceptance criteria against real test outputs.",
             "Implemented construct_recovery_prompt() formulating targeted error traceback repairs for autonomous self-healing loops."
         ]),
-        ("backend/agy_reviewer.py (Created)", [
-            "Discovered and integrated real Antigravity CLI binary (C:\\Users\\sweek\\AppData\\Local\\agy\\bin\\agy.EXE).",
-            "Executes non-interactive print mode (agy -p ... --dangerously-skip-permissions --output-format json).",
-            "Extracts independent verdicts (PASSED, NEEDS_IMPROVEMENT, FAILED), confidence scores (1-100), and security recommendations."
-        ]),
         ("backend/orchestrator.py (Created)", [
             "Engineered central pipeline state machine: QUEUED -> PLANNING -> AWAITING_APPROVAL -> EXECUTING -> VERIFYING -> COMPLETED.",
             "Implemented real-time Server-Sent Events (SSE) broadcaster with queue subscription management.",
@@ -337,7 +326,7 @@ def build_pdf():
         ("backend/main.py (Enhanced)", [
             "Integrated orchestrator, permission engine, and database startup recovery hooks.",
             "Added REST and SSE endpoints: POST /api/tasks, GET /api/tasks/{id}/events, GET /api/approvals/pending, POST /api/approvals/{id}/respond, GET/POST /api/permissions/rules.",
-            "Added GET /api/health endpoint verifying Codex, AGY, SQLite, and Python runtime status.",
+            "Added GET /api/health endpoint verifying Codex, database, and Python runtime status.",
             "Preserved all legacy endpoints (/api/status, /api/screenshot, /api/ppt/*, /ws/remote, phone pairing)."
         ]),
         ("desktop_app/index.html & style.css & app.js (Redesigned & Rebuilt)", [
@@ -373,7 +362,7 @@ def build_pdf():
         {
             "num": "Slide 1",
             "title": "Title & Executive Summary",
-            "subtitle": "FCC-Codex Autonomous OS Agent — Desktop AI Operating Agent",
+            "subtitle": "Codex Autonomous OS Agent — Desktop AI Operating Agent",
             "points": [
                 "<b>The Problem:</b> Most AI coding assistants are simple chat boxes that return code snippets, leaving humans to copy-paste, install packages, run tests, and debug errors manually.",
                 "<b>The Solution:</b> An autonomous agent runtime that plans, executes with real tools, runs tests, fixes bugs, and reports verified results—while keeping the human in control via an OS permission system."
@@ -382,14 +371,14 @@ def build_pdf():
         },
         {
             "num": "Slide 2",
-            "title": "Dual-Agent Architecture: Builder & Auditor",
-            "subtitle": "Why Two Agents Are Better Than One",
+            "title": "Autonomous Execution Architecture",
+            "subtitle": "Planning, Execution, and Verification in a Closed Loop",
             "points": [
+                "<b>Planning AI:</b> Inspects repositories and dependencies to formulate structured, actionable Pydantic plans.",
                 "<b>Codex CLI (The Implementer):</b> Generates real files, modifies repositories, runs shell commands, and builds software.",
-                "<b>AGY CLI / Antigravity (The Auditor):</b> An independent agent that reviews changes against acceptance criteria, providing unbiased quality scores and vulnerability checks.",
-                "<b>Separation of Powers:</b> The agent that writes the code does not have the final say on whether it is safe and correct."
+                "<b>Iterative Verifier:</b> Runs automated tests and executes self-repair recovery loops if errors occur."
             ],
-            "speaker_notes": "Mention that both Codex (v0.144.3) and AGY (v1.2.17) are genuinely installed and integrated on the machine."
+            "speaker_notes": "Mention that official Codex CLI (v0.144.3) is genuinely installed and executed non-interactively on the machine."
         },
         {
             "num": "Slide 3",
@@ -432,7 +421,7 @@ def build_pdf():
             "points": [
                 "<b>Tests A–E:</b> Planning, real file operations, permission waiting, single-use grants, and session grants.",
                 "<b>Tests F–J:</b> Persistent rules, human denials, full access safeguards, failure recovery, and cancellation.",
-                "<b>Tests K–N:</b> Workspace isolation, multi-task concurrency, real AGY reviews, and restart recovery.",
+                "<b>Tests K–N:</b> Workspace isolation, multi-task concurrency, completion reporting, and restart recovery.",
                 "<b>Command to Verify:</b> <code>backend\\venv\\Scripts\\python.exe -m unittest tests/test_agent_system.py</code>"
             ],
             "speaker_notes": "State clearly that all 14 mandatory acceptance criteria defined in the prompt passed cleanly."
@@ -442,14 +431,14 @@ def build_pdf():
             "title": "Live Demo Script (Step-by-Step)",
             "subtitle": "How to Deliver an Impressive 3-Minute Demonstration",
             "points": [
-                "<b>Step 1:</b> Start app via <code>run.bat</code> or <code>python start.py</code>. Show status pills (Codex: Ready, AGY: Ready).",
+                "<b>Step 1:</b> Start app via <code>run.bat</code> or <code>python start.py</code>. Show status indicator (Codex: Ready).",
                 "<b>Step 2:</b> Enter prompt: <i>'Create a Node.js microservice with automated tests.'</i>",
                 "<b>Step 3:</b> Show the structured plan generated by the Planning AI in the accordion.",
                 "<b>Step 4:</b> Demonstrate the OS Permission Dialog popping up. Explain the 6 options and click <b>'Allow for this Session'</b>.",
                 "<b>Step 5:</b> Show real-time terminal output in the activity stream as Codex installs packages and writes files.",
-                "<b>Step 6:</b> Point out the automated test passing and the final AGY compliance score report."
+                "<b>Step 6:</b> Point out the automated test passing and the final completion report."
             ],
-            "speaker_notes": "Stick to this 3-minute sequence. It demonstrates planning, security, real execution, testing, and dual-agent review in one seamless flow."
+            "speaker_notes": "Stick to this 3-minute sequence. It demonstrates planning, security, real execution, testing, and verified completion in one seamless flow."
         }
     ]
 

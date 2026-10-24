@@ -14,19 +14,15 @@ logger.setLevel(logging.INFO)
 
 # Default Codex CLI paths
 POTENTIAL_CODEX_PATHS = [
-    Path(r"C:\Users\sweek\.local\bin\fcc-codex.exe"),
     Path(r"C:\Users\sweek\AppData\Local\Programs\OpenAI\Codex\bin\codex.EXE"),
     Path(r"C:\Users\sweek\AppData\Local\OpenAI\Codex\bin\9691020b546a15b2\codex.exe")
 ]
 
 def find_codex_binary() -> Optional[str]:
-    """Finds the installed fcc-codex or codex binary."""
+    """Finds the installed official OpenAI Codex binary."""
     for p in POTENTIAL_CODEX_PATHS:
         if p.exists() and p.is_file():
             return str(p)
-    which_fcc = shutil.which("fcc-codex")
-    if which_fcc:
-        return which_fcc
     which_codex = shutil.which("codex")
     if which_codex:
         return which_codex
@@ -48,7 +44,7 @@ class CodexAgent:
             "default_workspace": self.default_workspace,
             "models": [
                 {"id": "gpt-5.6-terra", "name": "5.6 Terra Light (Recommended)", "desc": "Default Codex Fast Agent"},
-                {"id": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b", "name": "Nemotron 3 Super", "desc": "High reasoning via FCC"},
+                {"id": "nvidia_nim/nvidia/nemotron-3-super-120b-a12b", "name": "Nemotron 3 Super", "desc": "High reasoning via NVIDIA NIM"},
                 {"id": "meta/llama-3.3-70b-instruct", "name": "Meta Llama 3.3 70B", "desc": "Via NVIDIA NIM"}
             ]
         }
@@ -152,14 +148,14 @@ class CodexAgent:
         model: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Stage 2: Runs fcc-codex non-interactively with --json and streams progress
+        Stage 2: Runs codex non-interactively with --json and streams progress
         back to the desktop UI.
         """
         binary = find_codex_binary()
         if not binary:
             yield {
                 "type": "error",
-                "message": "fcc-codex binary not found on this system. Please verify C:\\Users\\sweek\\.local\\bin\\fcc-codex.exe."
+                "message": "Codex binary not found on this system. Please check OpenAI Codex CLI installation."
             }
             return
 

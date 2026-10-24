@@ -99,6 +99,29 @@
       cursor: pointer;
     }
 
+    .btn-emergency {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #fca5a5;
+      font-weight: 700;
+    }
+    .btn-emergency.active-stop {
+      background: #ef4444;
+      color: #fff;
+      animation: pulse 1s infinite;
+    }
+
+    .btn-speaker {
+      background: transparent;
+      border: none;
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    .btn-speaker.muted {
+      opacity: 0.4;
+    }
+
     /* Main Container with 3 Unified Sections */
     main {
       flex: 1;
@@ -569,10 +592,16 @@
       <span>OS Agent Remote</span>
     </div>
     <div class="header-pills">
+      <button class="btn-header btn-emergency" id="mobile-stop-btn" onclick="toggleEmergencyStopMobile()" title="Emergency stop all agent actions">🛑 STOP</button>
       <span class="status-tag" id="status-tag">Connected</span>
       <button class="btn-header" onclick="refreshScreenInstant()" title="Refresh screen snapshot">📸 Sync</button>
     </div>
   </header>
+
+  <!-- Emergency Stop Banner (Hidden by default) -->
+  <div id="mobile-emergency-banner" style="display:none; background:#ef4444; color:#ffffff; font-weight:700; font-size:11px; text-align:center; padding:6px; cursor:pointer;" onclick="clearEmergencyStopMobile()">
+    🛑 EMERGENCY STOP ACTIVE — TAP TO RESUME AGENTS
+  </div>
 
   <main>
     <!-- =========================================================
@@ -637,9 +666,12 @@
       <!-- Live Agent Status / Feedback Ticker -->
       <div class="agent-feedback-bar" onclick="toggleChatDrawer()">
         <span class="feedback-text" id="feedback-text">
-          🤖 <b>NVIDIA Agent</b>: Ready for your command
+          🤖 <b>OS Agent</b>: Ready for your command
         </span>
-        <button class="chat-toggle-btn" id="chat-toggle-btn">History ▲</button>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <button class="btn-speaker" id="btn-mobile-tts" onclick="event.stopPropagation(); toggleMobileTts();" title="Toggle Voice Output">🔊</button>
+          <button class="chat-toggle-btn" id="chat-toggle-btn">History ▲</button>
+        </div>
       </div>
 
       <!-- Textbox & Voice Command Bar -->
@@ -670,20 +702,36 @@
         </div>
       </div>
     </div>
+
+    <!-- PIN Pairing Modal (Shown if unauthorized) -->
+    <div id="pin-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88); backdrop-filter:blur(8px); z-index:9999; align-items:center; justify-content:center; padding:20px;">
+      <div style="background:#18181b; border:1px solid #27272a; border-radius:14px; padding:24px; max-width:320px; width:100%; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,0.6);">
+        <div style="font-size:32px; margin-bottom:8px;">🔐</div>
+        <h3 style="font-size:16px; margin-bottom:6px; color:#fff;">Pair Mobile Remote</h3>
+        <p style="font-size:12px; color:#a1a1aa; margin-bottom:16px;">Enter the 4-digit PIN shown on your laptop screen or desktop settings.</p>
+        <input type="text" id="pin-input" maxlength="4" placeholder="4826" style="width:140px; text-align:center; font-size:24px; font-weight:700; letter-spacing:8px; padding:10px; background:#0c0c0e; border:2px solid #10a37f; border-radius:8px; color:#fff; outline:none; margin-bottom:14px;" />
+        <div id="pin-error" style="color:#ef4444; font-size:11.5px; margin-bottom:12px; display:none;">Invalid PIN. Please try again.</div>
+        <button onclick="submitPairingPin()" style="width:100%; padding:10px; background:#10a37f; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;">Pair Remote</button>
+      </div>
+    </div>
   </main>
 
   <script>
+    // --- Pairing & Authentication ---
+    let authToken = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('os_agent_remote_token') || '';
+
     // --- WebSocket Connection ---
     const host = window.location.hostname || 'localhost';
     const port = window.location.port || '8000';
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${host}:${port}/ws/remote`;
 
     let ws = null;
     let isConnected = false;
     let dragLocked = false;
     let screenWidth = 1920;
     let screenHeight = 1080;
+    let mobileEmergencyStopped = false;
+    let mobileTtsEnabled = localStorage.getItem('os_agent_mobile_tts') !== 'false';
 
     const statusDot = document.getElementById('status-dot');
     const statusTag = document.getElementById('status-tag');
@@ -691,6 +739,13 @@
     const feedbackText = document.getElementById('feedback-text');
     const drawerMessages = document.getElementById('drawer-messages');
     const promptInput = document.getElementById('prompt-input');
+
+    // Sync TTS toggle button state
+    const btnMobileTts = document.getElementById('btn-mobile-tts');
+    if (btnMobileTts) {
+      btnMobileTts.classList.toggle('muted', !mobileTtsEnabled);
+      btnMobileTts.textContent = mobileTtsEnabled ? '🔊' : '🔇';
+    }
 
     // Immediate initial snapshot load so screen mirror appears without delay
     if (screenImg) {
@@ -700,13 +755,16 @@
       };
     }
 
-    // Fetch initial screen dimensions
+    // Fetch initial screen dimensions and emergency stop status
     fetch('/api/status')
       .then(r => r.json())
       .then(d => {
         if (d.screen) {
           screenWidth = d.screen.width;
           screenHeight = d.screen.height;
+        }
+        if (d.emergency_stopped) {
+          setMobileEmergencyStopUI(true);
         }
       })
       .catch(() => {});
@@ -718,7 +776,65 @@
       }
     }, 1500);
 
+    // Periodic Emergency Stop Checker
+    setInterval(async () => {
+      try {
+        const res = await fetch('/api/emergency-stop/status');
+        if (res.ok) {
+          const d = await res.json();
+          setMobileEmergencyStopUI(d.emergency_stopped);
+        }
+      } catch (e) {}
+    }, 3000);
+
+    // Check pairing before connecting
+    checkPairing();
+
+    function checkPairing() {
+      if (!authToken) {
+        const pinModal = document.getElementById('pin-modal');
+        if (pinModal) pinModal.style.display = 'flex';
+      } else {
+        const pinModal = document.getElementById('pin-modal');
+        if (pinModal) pinModal.style.display = 'none';
+        connectWebSocket();
+      }
+    }
+
+    async function submitPairingPin() {
+      const pin = document.getElementById('pin-input').value.trim();
+      const errDiv = document.getElementById('pin-error');
+      if (!pin) return;
+      try {
+        const res = await fetch('/api/pairing/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: pin })
+        });
+        const data = await res.json();
+        if (data.valid && data.token) {
+          authToken = data.token;
+          localStorage.setItem('os_agent_remote_token', authToken);
+          const pinModal = document.getElementById('pin-modal');
+          if (pinModal) pinModal.style.display = 'none';
+          connectWebSocket();
+        } else {
+          errDiv.style.display = 'block';
+          errDiv.textContent = data.error || 'Invalid PIN. Check laptop desktop settings.';
+        }
+      } catch (err) {
+        errDiv.style.display = 'block';
+        errDiv.textContent = 'Connection error: ' + err.message;
+      }
+    }
+
     function connectWebSocket() {
+      if (ws) {
+        try { ws.close(); } catch (e) {}
+      }
+      const tokenParam = authToken ? `?token=${encodeURIComponent(authToken)}` : '';
+      const wsUrl = `${protocol}//${host}:${port}/ws/remote${tokenParam}`;
+
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -751,16 +867,23 @@
           } else if (msg.type === 'agent_thinking') {
             feedbackText.innerHTML = `🤔 <b>Thinking:</b> "${escapeHtml(msg.prompt)}"`;
             appendMessage('user', msg.prompt);
-          } else if (msg.type === 'agent_response') {
-            let snippet = msg.content.replace(/```[\s\S]*?```/g, '').trim();
+          } else if (msg.type === 'agent_response' || msg.type === 'chat_response' || msg.type === 'task_completed') {
+            const rawContent = msg.content || msg.summary || 'Completed.';
+            let snippet = rawContent.replace(/```[\s\S]*?```/g, '').trim();
             if (snippet.length > 55) snippet = snippet.substring(0, 55) + '...';
             feedbackText.innerHTML = `🤖 <b>Agent:</b> ${escapeHtml(snippet || 'Action completed')}`;
 
-            let reply = formatMarkdown(msg.content);
+            let reply = formatMarkdown(rawContent);
             if (msg.actions && msg.actions.length > 0) {
               reply += `<br><span class="action-tag">⚡ Executed ${msg.actions.length} action(s)</span>`;
             }
             const bubble = appendMessage('assistant', reply);
+
+            // Speak response via neural TTS audio or Web Speech fallback
+            const spokenText = msg.spoken_summary || snippet;
+            if (spokenText) {
+              speakMobileAudio(spokenText, msg.audio_url);
+            }
 
             if (msg.ppt_files && msg.ppt_files.length > 0) {
               const pptContainer = document.createElement('div');
@@ -795,6 +918,14 @@
                 toggleChatDrawer();
               }
             }
+          } else if (msg.type === 'agent_progress') {
+            const eType = msg.event_type || 'AGENT_PROGRESS';
+            const details = msg.data?.tool || msg.data?.description || '';
+            feedbackText.innerHTML = `⚡ <b>Progress:</b> ${escapeHtml(eType)} ${details ? `(${escapeHtml(details)})` : ''}`;
+          } else if (msg.type === 'task_failed') {
+            const errStr = msg.error || 'Task failed.';
+            feedbackText.innerHTML = `❌ <b>Failed:</b> ${escapeHtml(errStr)}`;
+            appendMessage('assistant', `⚠️ ${escapeHtml(errStr)}`);
           }
         } catch (e) {
           console.error('[WS] Parse error', e);
@@ -814,7 +945,124 @@
       };
     }
 
-    connectWebSocket();
+    // --- Emergency Stop Mobile Logic ---
+    async function toggleEmergencyStopMobile() {
+      if (mobileEmergencyStopped) {
+        clearEmergencyStopMobile();
+      } else {
+        if (!confirm('🛑 Activate Emergency Stop? This halts all running actions immediately.')) return;
+        try {
+          await fetch('/api/emergency-stop', { method: 'POST' });
+          setMobileEmergencyStopUI(true);
+        } catch (e) {
+          alert('Stop failed: ' + e.message);
+        }
+      }
+    }
+
+    async function clearEmergencyStopMobile() {
+      try {
+        await fetch('/api/emergency-stop/clear', { method: 'POST' });
+        setMobileEmergencyStopUI(false);
+      } catch (e) {
+        alert('Resume failed: ' + e.message);
+      }
+    }
+
+    function setMobileEmergencyStopUI(stopped) {
+      mobileEmergencyStopped = stopped;
+      const banner = document.getElementById('mobile-emergency-banner');
+      const btn = document.getElementById('mobile-stop-btn');
+      if (stopped) {
+        if (banner) banner.style.display = 'block';
+        if (btn) {
+          btn.classList.add('active-stop');
+          btn.textContent = '⚠️ RESUME';
+        }
+      } else {
+        if (banner) banner.style.display = 'none';
+        if (btn) {
+          btn.classList.remove('active-stop');
+          btn.textContent = '🛑 STOP';
+        }
+      }
+    }
+
+    // --- TTS Audio for Mobile ---
+    let currentMobileAudio = null;
+    let lastMobileSpokenText = '';
+    let lastMobileSpokenTime = 0;
+
+    function stopMobileSpeech() {
+      if (currentMobileAudio) {
+        try {
+          currentMobileAudio.pause();
+          currentMobileAudio.currentTime = 0;
+        } catch (e) {}
+        currentMobileAudio = null;
+      }
+      if (window.speechSynthesis) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch (e) {}
+      }
+    }
+
+    function toggleMobileTts() {
+      mobileTtsEnabled = !mobileTtsEnabled;
+      localStorage.setItem('os_agent_mobile_tts', mobileTtsEnabled ? 'true' : 'false');
+      const btn = document.getElementById('btn-mobile-tts');
+      if (btn) {
+        btn.classList.toggle('muted', !mobileTtsEnabled);
+        btn.textContent = mobileTtsEnabled ? '🔊' : '🔇';
+      }
+      if (!mobileTtsEnabled) {
+        stopMobileSpeech();
+      }
+    }
+
+    function speakMobileAudio(text, audioUrl) {
+      if (!mobileTtsEnabled || !text) return;
+
+      const now = Date.now();
+      const cleanNorm = text.trim().toLowerCase();
+      // Deduplicate recent speech within 15 seconds
+      if (cleanNorm === lastMobileSpokenText && (now - lastMobileSpokenTime) < 15000) {
+        console.log('[Mobile TTS] Skipping duplicate spoken text');
+        return;
+      }
+      lastMobileSpokenText = cleanNorm;
+      lastMobileSpokenTime = now;
+
+      // Stop any current playback on interruption
+      stopMobileSpeech();
+
+      if (audioUrl) {
+        try {
+          currentMobileAudio = new Audio(audioUrl);
+          currentMobileAudio.play().catch((err) => {
+            console.warn('[Mobile Neural Audio Playback failed, falling back to Web Speech]', err);
+            speakMobileWebSpeech(text);
+          });
+          return;
+        } catch (e) {
+          console.warn('[Mobile Audio Element initialization failed]', e);
+        }
+      }
+
+      speakMobileWebSpeech(text);
+    }
+
+    function speakMobileWebSpeech(text) {
+      if (!mobileTtsEnabled || !window.speechSynthesis || !text) return;
+      try {
+        const clean = text.replace(/```[\s\S]*?```/g, '').replace(/[*_#`[\]()]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!clean) return;
+        const utterance = new SpeechSynthesisUtterance(clean.substring(0, 300));
+        utterance.rate = 1.05;
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {}
+    }
 
     // --- Trackpad Logic ---
     const pad = document.getElementById('trackpad-pad');

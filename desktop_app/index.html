@@ -1254,6 +1254,94 @@ input[type="range"] {
   max-height: 100%;
   object-fit: contain;
 }
+
+/* Agent Status Pills */
+.agent-pills-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 12px;
+}
+
+.agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.agent-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-strong);
+  color: var(--text-main);
+}
+
+.agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #666;
+}
+
+.agent-dot.active {
+  background: #10a37f;
+  box-shadow: 0 0 6px rgba(16, 163, 127, 0.8);
+}
+
+/* Emergency Stop Button */
+.emergency-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  padding: 5px 12px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.emergency-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+  transform: translateY(-1px);
+}
+
+.emergency-stop-btn.stopped {
+  background: #ef4444 !important;
+  color: #ffffff !important;
+  border-color: #dc2626 !important;
+  animation: pulse-emergency 1s infinite alternate;
+}
+
+@keyframes pulse-emergency {
+  from { box-shadow: 0 0 8px rgba(239, 68, 68, 0.8); }
+  to { box-shadow: 0 0 20px rgba(239, 68, 68, 1), 0 0 30px rgba(239, 68, 68, 0.6); }
+}
+
+/* Voice Mic & TTS Controls */
+.mic-btn.listening {
+  background: rgba(239, 68, 68, 0.2) !important;
+  color: #ef4444 !important;
+  animation: pulse-emergency 1s infinite alternate;
+}
+
+.tts-btn.muted {
+  opacity: 0.35;
+}
   </style>
 </head>
 <body class="dark-theme">
@@ -1343,34 +1431,58 @@ input[type="range"] {
           <!-- Model Selector Dropdown -->
           <div class="model-selector-wrapper">
             <div class="model-selector" id="model-selector-btn">
-              <span class="model-name" id="current-model-display">Llama 3.3 70B (NVIDIA NIM)</span>
+              <span class="model-name" id="current-model-display">Nemotron 3.5 Lightning 30B</span>
               <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </div>
             
             <div class="model-dropdown-menu" id="model-dropdown-menu">
-              <div class="dropdown-item active" data-model="meta/llama-3.3-70b-instruct">
-                <div class="item-title">Meta Llama 3.3 70B Instruct</div>
-                <div class="item-desc">High-speed, powerful reasoning & OS tool automation</div>
+              <div class="dropdown-item active" data-model="nvidia/nemotron-3.5-lightning-30b-a3b">
+                <div class="item-title">Nemotron 3.5 Lightning 30B</div>
+                <div class="item-desc">Ultra-fast agent model, high-speed OS automation (Recommended)</div>
               </div>
-              <div class="dropdown-item" data-model="nvidia/llama-3.1-nemotron-70b-instruct">
-                <div class="item-title">NVIDIA Nemotron 70B Instruct</div>
-                <div class="item-desc">Fine-tuned for agent alignment and complex task workflows</div>
+              <div class="dropdown-item" data-model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning">
+                <div class="item-title">Nemotron 3 Nano Reasoning 30B</div>
+                <div class="item-desc">Sub-3s latency reasoning & step-by-step logic</div>
               </div>
-              <div class="dropdown-item" data-model="deepseek-ai/deepseek-r1">
-                <div class="item-title">DeepSeek R1</div>
-                <div class="item-desc">State of the art reasoning model on NVIDIA NIM</div>
+              <div class="dropdown-item" data-model="nvidia/nemotron-3-ultra-550b-a55b">
+                <div class="item-title">Nemotron 3 Ultra 550B</div>
+                <div class="item-desc">Flagship 550B parameter deep reasoning engine</div>
               </div>
-              <div class="dropdown-item" data-model="mistralai/mistral-large-2-instruct">
-                <div class="item-title">Mistral Large 2 Instruct</div>
-                <div class="item-desc">Superior multilingual & instruction following</div>
+              <div class="dropdown-item" data-model="nvidia/nemotron-3.5-super-vl-120b-a12b">
+                <div class="item-title">Nemotron 3.5 Super VL 120B</div>
+                <div class="item-desc">Multimodal screen vision and element localization</div>
               </div>
+            </div>
+          </div>
+          <!-- Specialized Agents Status -->
+          <div class="agent-pills-bar" id="agent-pills-bar">
+            <div class="agent-pill" id="agent-pill-browser" title="Browser Agent: Direct existing Chrome/Edge control (No Playwright)">
+              <span class="agent-dot active"></span>
+              <span>🌐 Browser</span>
+            </div>
+            <div class="agent-pill" id="agent-pill-file" title="File Agent: Real file operations with diffs & backups">
+              <span class="agent-dot active"></span>
+              <span>📁 File</span>
+            </div>
+            <div class="agent-pill" id="agent-pill-system" title="System Agent: Process management & safe Windows telemetry">
+              <span class="agent-dot active"></span>
+              <span>⚙️ System</span>
+            </div>
+            <div class="agent-pill" id="agent-pill-vision" title="Vision Agent: Multimodal screen understanding & UI coordinates">
+              <span class="agent-dot active"></span>
+              <span>👁️ Vision</span>
             </div>
           </div>
         </div>
 
         <div class="header-right">
+          <!-- Emergency Stop Button -->
+          <button class="emergency-stop-btn" id="btn-emergency-stop" title="Emergency Stop: Halt all running agents and block any operations">
+            <span class="stop-icon">🛑</span>
+            <span id="emergency-stop-text">Emergency Stop</span>
+          </button>
           <button class="header-pill-btn" id="btn-top-qr">
             <svg class="icon-sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="3" width="7" height="7"></rect>
@@ -1468,6 +1580,12 @@ input[type="range"] {
             </button>
             <button class="prompt-tool-btn" id="btn-quick-win" title="Press Win Key">
               <span>🪟</span>
+            </button>
+            <button class="prompt-tool-btn mic-btn" id="btn-desktop-mic" title="Voice Input (Click to speak)">
+              <span id="mic-icon">🎙️</span>
+            </button>
+            <button class="prompt-tool-btn tts-btn active" id="btn-desktop-tts" title="Toggle Spoken Responses (TTS)">
+              <span id="tts-icon">🔊</span>
             </button>
           </div>
 
@@ -1593,22 +1711,47 @@ input[type="range"] {
 
       <div class="modal-body">
         <div class="form-group">
-          <label for="input-api-key">NVIDIA NIM API Key</label>
-          <div class="password-input-row">
-            <input type="password" id="input-api-key" placeholder="nvapi-..." />
-            <button class="btn btn-secondary btn-sm" id="btn-toggle-key-vis">Show</button>
-          </div>
-          <small class="form-hint">Obtain your API key from <a href="https://build.nvidia.com" target="_blank" style="color:var(--accent);">build.nvidia.com</a>. Stored locally in backend/.env.</small>
+          <label for="select-llm-provider">LLM Provider</label>
+          <select id="select-llm-provider" class="form-select">
+            <option value="nvidia">NVIDIA NIM (High Speed & Vision)</option>
+            <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
+            <option value="ollama">Ollama (Local Models)</option>
+            <option value="custom">Custom OpenAI-Compatible Endpoint</option>
+          </select>
         </div>
 
         <div class="form-group">
-          <label for="select-default-model">Default LLM Model</label>
-          <select id="select-default-model" class="form-select">
-            <option value="meta/llama-3.3-70b-instruct">meta/llama-3.3-70b-instruct</option>
-            <option value="nvidia/llama-3.1-nemotron-70b-instruct">nvidia/llama-3.1-nemotron-70b-instruct</option>
-            <option value="deepseek-ai/deepseek-r1">deepseek-ai/deepseek-r1</option>
-            <option value="mistralai/mistral-large-2-instruct">mistralai/mistral-large-2-instruct</option>
-          </select>
+          <label for="input-api-key">LLM / Provider API Key</label>
+          <div class="password-input-row">
+            <input type="password" id="input-api-key" placeholder="nvapi-... or sk-..." />
+            <button class="btn btn-secondary btn-sm" id="btn-toggle-key-vis">Show</button>
+          </div>
+          <small class="form-hint">Stored securely in backend/.env with secret masking.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="input-base-url">API Base URL</label>
+          <input type="text" id="input-base-url" class="form-select" placeholder="https://integrate.api.nvidia.com/v1" />
+          <small class="form-hint">Endpoint for OpenAI-compatible completions.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="input-chat-model">Chat / Orchestrator Model</label>
+          <input type="text" id="input-chat-model" class="form-select" placeholder="nvidia/nemotron-3.5-lightning-30b-a3b" />
+        </div>
+
+        <div class="form-group">
+          <label for="input-vision-model">Vision Model</label>
+          <input type="text" id="input-vision-model" class="form-select" placeholder="nvidia/nemotron-3.5-super-vl-120b-a12b" />
+          <small class="form-hint">Used by Vision Agent for screen understanding & target localization.</small>
+        </div>
+
+        <div class="form-group" style="background: rgba(255,255,255,0.03); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="margin:0; font-weight:600;">📱 Phone Remote Pairing PIN</label>
+            <code id="settings-pairing-pin" style="font-size: 14px; font-weight: 700; color: var(--accent);">4826</code>
+          </div>
+          <small class="form-hint">Enter this 4-digit PIN on your phone's browser when prompted.</small>
         </div>
 
         <div class="form-group">

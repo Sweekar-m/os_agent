@@ -125,7 +125,7 @@ class PlannerAI:
 
         # Construct planning prompt for LLM
         system_prompt = (
-            "You are the Primary Planning AI for an Autonomous OS Agent running real Codex and AGY.\n"
+            "You are the Primary Planning AI for an Autonomous OS Agent running OpenAI Codex.\n"
             "Your job is to translate the user's objective into a structured, highly actionable execution plan.\n"
             "You must return ONLY a valid JSON object matching the TaskPlan schema.\n"
             "Be precise, realistic, and do not invent fake files. Base your plan on the real workspace context provided."

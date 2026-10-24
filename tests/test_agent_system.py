@@ -4,6 +4,8 @@ import asyncio
 import unittest
 import shutil
 import uuid
+import json
+from datetime import datetime
 from pathlib import Path
 
 # Add backend directory to path
@@ -20,12 +22,11 @@ from permission_engine import (
 from planner import planner, inspect_workspace_context
 from verifier import verifier
 from codex_runtime import codex_runtime, find_codex_binary
-from agy_reviewer import agy_reviewer
 from orchestrator import orchestrator, TaskState
 
 TEST_WORKSPACE = Path(__file__).resolve().parent.parent / "scratch" / "test_suite_workspace"
 
-class TestFCCAutonomousOSAgent(unittest.IsolatedAsyncioTestCase):
+class TestCodexAutonomousOSAgent(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         # Create fresh test workspace
@@ -399,30 +400,35 @@ class TestFCCAutonomousOSAgent(unittest.IsolatedAsyncioTestCase):
         print("✓ Test L Passed: Multi-task approvals and states strictly isolated.")
 
     # -------------------------------------------------------------
-    # Test M: Real AGY review integration
+    # Test M: Clean task completion report without external reviewer dependency
     # -------------------------------------------------------------
-    async def test_m_real_agy_review(self):
-        print("\n--- Running Test M: Real AGY Reviewer ---")
-        agy_status = agy_reviewer.get_status()
-        self.assertTrue(agy_status["available"])
-        self.assertIsNotNone(agy_status["binary_path"])
-        task_id_m = f"task-agy-{uuid.uuid4().hex[:6]}"
+    async def test_m_completion_report_generation(self):
+        print("\n--- Running Test M: Clean Task Completion Report ---")
+        task_id_m = f"task-complete-{uuid.uuid4().hex[:6]}"
         db.create_task(task_id_m, "Verify test setup", str(TEST_WORKSPACE), "balanced", "gpt-5.6-terra")
+        report = {
+            "task_id": task_id_m,
+            "objective": "Verify test setup",
+            "workspace": str(TEST_WORKSPACE),
+            "final_status": TaskState.COMPLETED,
+            "verified_success": True,
+            "modified_files": ["test_file.txt"],
+            "verification_checks_passed": True,
+            "verification_summary": "All tests passed cleanly.",
+            "verification_errors": [],
+            "recovery_attempts": 0,
+            "completed_at": datetime.utcnow().isoformat()
+        }
+        db.save_completion_report(task_id_m, report)
+        db.update_task_status(task_id_m, TaskState.COMPLETED)
 
-        # Verify AGY integration interface
-        review = await agy_reviewer.review_task(
-            task_id=task_id_m,
-            user_objective="Verify test setup",
-            workspace=str(TEST_WORKSPACE),
-            acceptance_criteria=["Tests pass cleanly"],
-            modified_files=["test_file.txt"],
-            verification_summary={"passed": True, "details": "All tests passed."},
-            timeout_seconds=15.0
-        )
-        self.assertTrue(review["available"])
-        self.assertIn("reviewer", review)
-        self.assertIn(review["verdict"], ["PASSED", "NEEDS_IMPROVEMENT", "TIMEOUT", "FAILED", "ERROR", "SKIPPED"])
-        print(f"✓ Test M Passed: AGY Reviewer evaluated context with verdict: {review['verdict']}")
+        fetched = db.get_task(task_id_m)
+        self.assertEqual(fetched["status"], TaskState.COMPLETED)
+        self.assertIsNotNone(fetched.get("completion_report_json"))
+        parsed = json.loads(fetched["completion_report_json"])
+        self.assertTrue(parsed["verified_success"])
+        self.assertEqual(parsed["task_id"], task_id_m)
+        print("✓ Test M Passed: Clean completion report recorded and verified.")
 
     # -------------------------------------------------------------
     # Test N: Restart recovery
