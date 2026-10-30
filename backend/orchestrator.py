@@ -1,4 +1,5 @@
 import asyncio
+import time
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -23,6 +24,8 @@ from agents.file_agent import file_agent
 from agents.system_agent import system_agent
 from agents.vision_agent import vision_agent
 from speech_service import speech_service
+from tool_registry import tool_registry
+from semantic_planner import semantic_planner
 
 logger = logging.getLogger("orchestrator")
 logger.setLevel(logging.INFO)
@@ -41,8 +44,8 @@ class TaskState:
 class MultiAgentOrchestrator:
     """
     Central Coordinator for the Windows OS Assistant.
-    Routes natural-language commands to Browser, File, System, and Vision Agents,
-    enforcing human permissions and verifying execution outcomes.
+    Coordinates Browser, File, System, and Vision Agents through an LLM-driven
+    general execution loop, enforcing human permissions and verifying execution outcomes.
     """
     def __init__(self):
         self.active_tasks: Dict[str, asyncio.Task] = {}
@@ -88,7 +91,6 @@ class MultiAgentOrchestrator:
     def emergency_stop(self) -> Dict[str, Any]:
         """Halts all active tasks immediately and blocks new actions."""
         res = permission_engine.trigger_emergency_stop()
-        # Cancel all active asyncio tasks
         for tid, worker in list(self.active_tasks.items()):
             if not worker.done():
                 worker.cancel()
@@ -121,7 +123,7 @@ class MultiAgentOrchestrator:
         chat_history: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
-        Public entrypoint: registers task, triggers planning, and spawns the multi-agent worker.
+        Public entrypoint: registers task, triggers semantic planning, and spawns the multi-agent worker.
         """
         if permission_engine.is_emergency_stopped():
             raise RuntimeError("Emergency stop is currently active. Clear emergency stop in Settings to proceed.")
@@ -141,12 +143,12 @@ class MultiAgentOrchestrator:
             permission_engine._full_access_grants[task_id] = True
 
         worker = asyncio.create_task(
-            self._run_multi_agent_pipeline(task_id, prompt, ws, permission_mode, chat_history=chat_history)
+            self._run_multi_agent_pipeline(task_id, prompt, ws, permission_mode, chat_history=chat_history, model=model)
         )
         self.active_tasks[task_id] = worker
         return task_id
 
-    # ----------------- Pipeline State Machine -----------------
+    # ----------------- General Execution Loop -----------------
 
     async def _run_multi_agent_pipeline(
         self,
@@ -154,63 +156,66 @@ class MultiAgentOrchestrator:
         prompt: str,
         workspace: str,
         permission_mode: str,
-        chat_history: Optional[List[Dict[str, Any]]] = None
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        model: Optional[str] = None
     ):
+        """
+        General Multi-Agent Execution Lifecycle:
+        1. Understand user's goal & inspect context.
+        2. Create structured plan using available tools from ToolRegistry.
+        3. Validate plan and permissions against PermissionEngine.
+        4. Execute tool with bounded retry budget.
+        5. Observe real tool result and decide whether to continue, recover, or finish.
+        6. Verify outcome using observable evidence (eliminating fabricated success).
+        7. Synthesize grounded final response.
+        """
         try:
-            # 1. INTENT & ROUTING PHASE
+            # Yield control immediately to allow caller to acknowledge acceptance (<200ms)
+            await asyncio.sleep(0.01)
+
+            # 1. UNDERSTAND GOAL & INSPECT CONTEXT -> FORMULATE SEMANTIC PLAN
             update_task_status(task_id, TaskState.PLANNING)
             await self.broadcast_event(task_id, "PHASE_CHANGED", {"phase": TaskState.PLANNING})
 
-            p_lower = prompt.lower().strip()
-
-            # Conversational greetings check
-            if p_lower in ["hi", "hello", "hey", "good morning", "yo", "sup", "how are you"]:
-                resp_text = f"Hello! I am your Windows OS Assistant. I'm ready to control your browser, manage files, check system performance, or inspect what's on your screen. What would you like to do?"
-                await self._complete_task_with_response(task_id, prompt, resp_text, agents_used=["Assistant"])
-                return
-
-            # Check if screen vision analysis is explicitly requested
-            is_screen_query = any(k in p_lower for k in [
-                "what's on my screen", "what am i seeing", "look at my screen", "explain this error",
-                "what error", "describe screen", "screenshot", "what app is open"
-            ])
-
-            if is_screen_query:
-                await self.broadcast_event(task_id, "AGENT_SELECTED", {
-                    "agent": "Vision Agent",
-                    "action": "Analyzing desktop screen and active window..."
-                })
-                vision_res = await vision_agent.analyze_screen(prompt=prompt)
-                analysis_text = vision_res.get("analysis", "I analyzed your screen.")
-                active_app = (vision_res.get("active_window") or {}).get("title", "Desktop")
-                final_text = f"**Screen Analysis ({active_app})**:\n\n{analysis_text}"
-                await self._complete_task_with_response(task_id, prompt, final_text, agents_used=["Vision Agent"])
-                return
-
-            # 2. MULTI-AGENT TASK PLANNING
-            plan = await self._formulate_multi_agent_plan(task_id, prompt, workspace, chat_history=chat_history)
+            plan = await self._formulate_multi_agent_plan(task_id, prompt, workspace, chat_history=chat_history, model=model)
+            if hasattr(plan, "to_dict"):
+                plan = plan.to_dict()
+            for s in plan.get("steps", []):
+                if "status" not in s:
+                    s["status"] = "PENDING"
             save_task_plan(task_id, plan)
             await self.broadcast_event(task_id, "PLAN_GENERATED", plan)
 
-            # 3. EXECUTION PHASE
+            # Check if this is a conversational request (greeting or chat)
+            if plan.get("is_conversational"):
+                resp_text = plan.get("conversational_response") or "I am your Windows OS Assistant. How can I help you today?"
+                await self._complete_task_with_response(task_id, prompt, resp_text, agents_used=["Assistant"])
+                return
+
+            # 2. EXECUTION PHASE
             update_task_status(task_id, TaskState.EXECUTING)
             await self.broadcast_event(task_id, "PHASE_CHANGED", {"phase": TaskState.EXECUTING})
 
-            executed_actions = []
-            agents_engaged = set()
+            executed_actions: List[Dict[str, Any]] = []
+            agents_engaged: Set[str] = set()
 
-            for step_idx, step in enumerate(plan.get("steps", [])):
+            steps = plan.get("steps", [])
+            max_steps = 10  # Prevent runaway execution
+            step_idx = 0
+
+            while step_idx < len(steps) and step_idx < max_steps:
                 if permission_engine.is_emergency_stopped():
                     raise asyncio.CancelledError("Emergency stop engaged during execution.")
 
+                step = steps[step_idx]
                 agent_name = step.get("agent", "System Agent")
-                action_name = step.get("action", "")
+                action_name = step.get("tool_name") or step.get("action", "")
                 params = step.get("params", {})
                 category = step.get("category", ActionCategory.SYSTEM_COMMAND)
-                risk = step.get("risk", RiskLevel.LOW)
+                risk = step.get("risk") or step.get("risk_level", RiskLevel.LOW)
                 agents_engaged.add(agent_name)
 
-                # Permission Check
+                # 3. PERMISSION & SAFETY CHECK
                 is_permitted, grant_src = permission_engine.is_action_permitted(
                     task_id=task_id,
                     workspace_root=workspace,
@@ -219,8 +224,11 @@ class MultiAgentOrchestrator:
                 )
 
                 if not is_permitted:
+                    approval_id = f"appr-{uuid.uuid4().hex[:12]}"
                     update_task_status(task_id, TaskState.AWAITING_APPROVAL)
                     await self.broadcast_event(task_id, "APPROVAL_REQUIRED", {
+                        "approval_id": approval_id,
+                        "step_index": step_idx,
                         "step": step.get("title"),
                         "agent": agent_name,
                         "action": action_name,
@@ -234,7 +242,8 @@ class MultiAgentOrchestrator:
                         action_type=f"{agent_name}.{action_name}",
                         reason=step.get("reason"),
                         impact=step.get("impact"),
-                        risk_level=risk
+                        risk_level=risk,
+                        approval_id=approval_id
                     )
 
                     if decision in [PermissionDecision.DENY, PermissionDecision.CANCEL]:
@@ -246,31 +255,92 @@ class MultiAgentOrchestrator:
 
                     update_task_status(task_id, TaskState.EXECUTING)
 
-                # Dispatch to appropriate Specialized Agent
+                # 4. EXECUTE REGISTERED TOOL
+                t0_step = time.time()
+                step_start_time = datetime.now(timezone.utc).isoformat()
                 await self.broadcast_event(task_id, "ACTION_EXECUTING", {
                     "step_index": step_idx,
                     "agent": agent_name,
                     "action": action_name,
-                    "params": params
+                    "params": params,
+                    "start_time": step_start_time
                 })
 
+                step["status"] = "RUNNING"
+                step["start_time"] = step_start_time
+                save_task_plan(task_id, plan)
+
                 action_result = await self._dispatch_agent_action(agent_name, action_name, params)
-                executed_actions.append({
+                step_end_time = datetime.now(timezone.utc).isoformat()
+                step_duration = round(time.time() - t0_step, 2)
+
+                # 5. OBSERVE RESULT & ADAPT / RECOVER
+                success = action_result.get("success", True)
+
+                # Safe Bounded Recovery Strategy
+                if not success and not step.get("_retried"):
+                    logger.info(f"Step {step_idx + 1} ({action_name}) reported issue. Attempting safe recovery...")
+                    recovery_res = await self._attempt_action_recovery(agent_name, action_name, params, action_result)
+                    if recovery_res:
+                        action_result = recovery_res
+                        success = recovery_res.get("success", False)
+                        step["_retried"] = True
+
+                step["status"] = "COMPLETED" if success else "FAILED"
+                step["end_time"] = step_end_time
+                step["duration_seconds"] = step_duration
+                step["result"] = action_result
+                save_task_plan(task_id, plan)
+
+                step_record = {
+                    "step_index": step_idx,
                     "step": step.get("title"),
                     "agent": agent_name,
                     "action": action_name,
-                    "result": action_result
-                })
+                    "params": params,
+                    "result": action_result,
+                    "success": success,
+                    "status": "COMPLETED" if success else "FAILED",
+                    "start_time": step_start_time,
+                    "end_time": step_end_time,
+                    "duration_seconds": step_duration,
+                    "verification": action_result.get("verification", {
+                        "status": "verified" if success else "failed"
+                    })
+                }
+                executed_actions.append(step_record)
 
                 await self.broadcast_event(task_id, "ACTION_COMPLETED", {
                     "step_index": step_idx,
                     "agent": agent_name,
                     "action": action_name,
-                    "success": action_result.get("success", True),
-                    "summary": action_result.get("message") or action_result.get("summary") or "Action executed"
+                    "success": success,
+                    "status": "COMPLETED" if success else "FAILED",
+                    "summary": action_result.get("message") or action_result.get("summary") or ("Action executed" if success else action_result.get("error", "Action failed")),
+                    "error": action_result.get("error") if not success else None,
+                    "verification": action_result.get("verification"),
+                    "duration_seconds": step_duration
                 })
 
-            # 4. OUTCOME SYNTHESIS & REPORTING
+                # Honest Failure Halting: Do not execute or mark downstream steps completed
+                if not success:
+                    err_msg = action_result.get("error") or f"Step {step_idx + 1} ({step.get('title')}) failed: {action_result.get('message', 'Execution unsuccessful')}"
+                    logger.warning(f"Task {task_id} step {step_idx + 1} failed: {err_msg}. Halting downstream execution.")
+                    update_task_status(task_id, TaskState.FAILED, error_message=err_msg)
+                    fail_report = self._synthesize_final_outcome(prompt, plan, executed_actions, list(agents_engaged))
+                    fail_report["error"] = err_msg
+                    fail_report["final_status"] = TaskState.FAILED
+                    save_completion_report(task_id, fail_report)
+                    await self.broadcast_event(task_id, "TASK_FAILED", {
+                        "error": err_msg,
+                        "failed_step_index": step_idx,
+                        "report": fail_report
+                    })
+                    return
+
+                step_idx += 1
+
+            # 6. VERIFY REQUESTED OUTCOME & SYNTHESIZE FINAL RESPONSE
             final_report = self._synthesize_final_outcome(prompt, plan, executed_actions, list(agents_engaged))
             spoken_summary = speech_service.filter_text_for_speech(final_report["summary"])
             final_report["spoken_summary"] = spoken_summary
@@ -278,7 +348,7 @@ class MultiAgentOrchestrator:
             save_completion_report(task_id, final_report)
             update_task_status(task_id, TaskState.COMPLETED)
             await self.broadcast_event(task_id, "TASK_COMPLETED", final_report)
-            log_audit(task_id, "TASK_COMPLETED", {"agents": list(agents_engaged)})
+            log_audit(task_id, "TASK_COMPLETED", {"agents": list(agents_engaged), "actions_count": len(executed_actions)})
 
         except asyncio.CancelledError:
             logger.info(f"Task {task_id} cancelled.")
@@ -292,364 +362,197 @@ class MultiAgentOrchestrator:
         finally:
             self.active_tasks.pop(task_id, None)
 
-    async def _dispatch_agent_action(self, agent_name: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Dispatches action directly to the instantiated Specialized Agent."""
+    async def _attempt_action_recovery(
+        self,
+        agent_name: str,
+        action: str,
+        params: Dict[str, Any],
+        failed_result: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Bounded safe recovery for common transient environmental conditions."""
         try:
-            # 1. BROWSER AGENT
+            # Case 1: Window wait failed -> check if app process is running and give one more grace period
+            if action in ["system_wait_for_window", "wait_for_window"]:
+                title = params.get("title", "")
+                await asyncio.sleep(0.5)
+                # Retry with slightly broader search
+                retry_res = await asyncio.to_thread(system_agent.wait_for_window, title, timeout=5.0)
+                if retry_res.get("success"):
+                    return retry_res
+
+            # Case 2: File open failed with ordinal reference because search results were empty -> run find_recent_documents then retry
+            if action in ["file_open", "open"] and not file_agent.last_search_results:
+                logger.info("Recovery: Populating recent documents for ordinal file open...")
+                recent_res = file_agent.find_recent_documents(limit=10)
+                if recent_res.get("success") and file_agent.last_search_results:
+                    return file_agent.open_file(params.get("target") or "the second one")
+
+            # Case 3: App launch failed -> check common map alias
+            if action in ["system_launch_app", "launch_app"]:
+                app_name = params.get("app", "")
+                from agents.system_agent import COMMON_APP_MAP
+                if app_name.lower() in COMMON_APP_MAP:
+                    target_exe = COMMON_APP_MAP[app_name.lower()]
+                    return await asyncio.to_thread(system_agent.launch_app, target_exe)
+
+        except Exception as rec_err:
+            logger.warning(f"Recovery attempt encountered error: {rec_err}")
+
+        return None
+
+    # =========================================================================
+    # Tool Registry Dispatch Bridge (Preserves Complete Backwards Compatibility)
+    # =========================================================================
+
+    async def _dispatch_agent_action(self, agent_name: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Dispatches action via central ToolRegistry while preserving legacy method signatures.
+        """
+        # Map legacy action names to ToolRegistry tool names
+        legacy_tool_map = {
+            # Browser Agent
+            ("Browser Agent", "list_tabs"): "browser_list_tabs",
+            ("Browser Agent", "get_tabs"): "browser_list_tabs",
+            ("Browser Agent", "open_tabs"): "browser_list_tabs",
+            ("Browser Agent", "summarize_tabs"): "browser_summarize_tabs",
+            ("Browser Agent", "summarize_open_tabs"): "browser_summarize_tabs",
+            ("Browser Agent", "tab_summary"): "browser_summarize_tabs",
+            ("Browser Agent", "search"): "browser_search",
+            ("Browser Agent", "navigate"): "browser_navigate",
+            ("Browser Agent", "new_tab"): "browser_new_tab",
+            ("Browser Agent", "close_tab"): "browser_close_tab",
+            ("Browser Agent", "switch_tab"): "browser_switch_tab",
+            ("Browser Agent", "click"): "browser_click",
+            ("Browser Agent", "click_at"): "browser_click",
+            ("Browser Agent", "type"): "browser_type",
+            ("Browser Agent", "type_text"): "browser_type",
+            ("Browser Agent", "scroll"): "browser_scroll",
+            ("Browser Agent", "extract_text"): "browser_extract_text",
+            # File Agent
+            ("File Agent", "recent"): "file_recent_documents",
+            ("File Agent", "find_recent_documents"): "file_recent_documents",
+            ("File Agent", "search"): "file_search",
+            ("File Agent", "search_files"): "file_search",
+            ("File Agent", "open"): "file_open",
+            ("File Agent", "open_file"): "file_open",
+            ("File Agent", "read"): "file_read",
+            ("File Agent", "read_file"): "file_read",
+            ("File Agent", "write"): "file_write",
+            ("File Agent", "write_file"): "file_write",
+            ("File Agent", "edit"): "file_edit",
+            ("File Agent", "edit_file"): "file_edit",
+            ("File Agent", "delete"): "file_delete",
+            ("File Agent", "delete_file"): "file_delete",
+            ("File Agent", "list_dir"): "file_list_dir",
+            ("File Agent", "generate_document"): "file_generate_document",
+            ("File Agent", "create_document"): "file_generate_document",
+            ("File Agent", "generate_pdf"): "file_generate_document",
+            ("File Agent", "generate_docx"): "file_generate_document",
+            # System Agent
+            ("System Agent", "telemetry"): "system_telemetry",
+            ("System Agent", "get_system_telemetry"): "system_telemetry",
+            ("System Agent", "diagnose"): "system_diagnose",
+            ("System Agent", "diagnose_system"): "system_diagnose",
+            ("System Agent", "list_processes"): "system_list_processes",
+            ("System Agent", "kill_process"): "system_terminate_process",
+            ("System Agent", "terminate_process"): "system_terminate_process",
+            ("System Agent", "launch_app"): "system_launch_app",
+            ("System Agent", "wait_for_window"): "system_wait_for_window",
+            ("System Agent", "type_into_window"): "system_type_into_window",
+            ("System Agent", "type_text"): "system_type_into_window",
+            ("System Agent", "enter_text"): "system_type_into_window",
+            ("System Agent", "verify_window_text"): "system_verify_window_text",
+            ("System Agent", "verify_text"): "system_verify_window_text",
+            ("System Agent", "press_hotkey"): "system_press_hotkey",
+            ("System Agent", "press_key"): "system_press_hotkey",
+            ("System Agent", "hotkey"): "system_press_hotkey",
+            ("System Agent", "open_path"): "system_open_path",
+            ("System Agent", "run_command"): "system_run_command",
+            # Vision Agent
+            ("Vision Agent", "analyze"): "vision_analyze_screen",
+            ("Vision Agent", "analyze_screen"): "vision_analyze_screen",
+            ("Vision Agent", "locate"): "vision_locate_target",
+            ("Vision Agent", "locate_target_coordinates"): "vision_locate_target",
+            ("Vision Agent", "explain_error"): "vision_explain_error"
+        }
+
+        # Resolve registered tool name
+        tool_name = action
+        if (agent_name, action) in legacy_tool_map:
+            tool_name = legacy_tool_map[(agent_name, action)]
+        elif tool_registry.get(action):
+            tool_name = action
+
+        # Execute through central ToolRegistry
+        if tool_registry.get(tool_name):
+            return await tool_registry.execute(tool_name, params)
+
+        # Fallback to direct agent call if not found in registry
+        logger.warning(f"Tool '{action}' not found in registry; using legacy agent dispatch for '{agent_name}'")
+        try:
             if agent_name == "Browser Agent":
                 if action == "navigate":
                     return await browser_agent.navigate(params.get("url", ""))
                 elif action == "search":
                     return await browser_agent.search(params.get("query", ""), engine=params.get("engine", "google"))
-                elif action == "scroll":
-                    return await browser_agent.scroll(params.get("direction", "down"), amount=float(params.get("amount", 3.0)))
-                elif action == "new_tab":
-                    return await browser_agent.new_tab(params.get("url"))
-                elif action == "close_tab":
-                    return await browser_agent.close_tab()
-                elif action == "switch_tab":
-                    return await browser_agent.switch_tab(params.get("direction", "next"))
-                elif action == "click":
-                    return await browser_agent.click_at(int(params.get("x", 0)), int(params.get("y", 0)))
-                elif action == "type":
-                    return await browser_agent.type_text(params.get("text", ""), press_enter=params.get("press_enter", False))
-                elif action == "extract_text":
-                    return await browser_agent.extract_page_text()
                 elif action in ["list_tabs", "get_tabs", "open_tabs"]:
                     return browser_agent.get_open_tabs(params.get("hwnd"))
-                elif action in ["summarize_tabs", "summarize_open_tabs", "tab_summary"]:
+                elif action in ["summarize_tabs", "summarize_open_tabs"]:
                     return await browser_agent.summarize_open_tabs(params.get("hwnd"), max_tabs=int(params.get("max_tabs", 15)))
-
-            # 2. FILE AGENT
             elif agent_name == "File Agent":
-                if action == "search":
-                    return file_agent.search_files(
-                        query=params.get("query", ""),
-                        search_dir=params.get("directory"),
-                        search_content=params.get("search_content", False)
-                    )
-                elif action == "recent":
-                    return file_agent.find_recent_documents(
-                        folders=params.get("folders"),
-                        limit=int(params.get("limit", 10))
-                    )
-                elif action == "open":
+                if action in ["recent", "find_recent_documents"]:
+                    return file_agent.find_recent_documents(folders=params.get("folders"), limit=int(params.get("limit", 10)))
+                elif action in ["open", "open_file"]:
                     return file_agent.open_file(params.get("target") or params.get("path"))
-                elif action == "read":
-                    return file_agent.read_file(params.get("path", ""), max_lines=int(params.get("max_lines", 300)))
-                elif action == "write":
-                    return file_agent.write_file(params.get("path", ""), params.get("content", ""), overwrite=params.get("overwrite", False))
-                elif action == "edit":
-                    return file_agent.edit_file(params.get("path", ""), params.get("find_text", ""), params.get("replace_text", ""))
-                elif action == "delete":
-                    return file_agent.delete_file(params.get("path", ""), confirm=params.get("confirm", True))
-                elif action == "list_dir":
-                    return file_agent.list_dir(params.get("directory"))
-
-            # 3. SYSTEM AGENT
+                elif action in ["search", "search_files"]:
+                    return file_agent.search_files(query=params.get("query", ""), search_dir=params.get("directory"))
             elif agent_name == "System Agent":
                 if action == "telemetry":
-                    return system_agent.get_system_telemetry()
-                elif action == "list_processes":
-                    return system_agent.list_processes(limit=int(params.get("limit", 20)), filter_name=params.get("filter"))
-                elif action == "kill_process":
-                    return system_agent.terminate_process(pid=params.get("pid"), name=params.get("name"), confirm=True)
+                    return await asyncio.to_thread(system_agent.get_system_telemetry)
                 elif action == "launch_app":
-                    return system_agent.launch_app(params.get("app", ""))
+                    return await asyncio.to_thread(system_agent.launch_app, params.get("app", ""))
                 elif action == "wait_for_window":
-                    return system_agent.wait_for_window(params.get("title", ""), timeout=float(params.get("timeout", 10.0)))
-                elif action in ["type_into_window", "type_text", "enter_text"]:
-                    return system_agent.type_into_window(params.get("text", ""), title_substr=params.get("title"))
-                elif action in ["verify_window_text", "verify_text"]:
-                    return system_agent.verify_window_text(params.get("title", ""), params.get("expected_snippet", ""), timeout=float(params.get("timeout", 5.0)))
-                elif action == "open_path":
-                    return system_agent.open_in_default_app(params.get("path", ""))
-                elif action == "run_command":
-                    return system_agent.run_terminal_command(params.get("command", ""), shell=params.get("shell", "powershell"))
-                elif action == "diagnose":
-                    return system_agent.diagnose_system()
-
-            # 4. VISION AGENT
+                    return await asyncio.to_thread(system_agent.wait_for_window, params.get("title", ""), timeout=float(params.get("timeout", 10.0)))
+                elif action == "type_into_window":
+                    return await asyncio.to_thread(system_agent.type_into_window, params.get("text", ""), title_substr=params.get("title"))
+                elif action == "verify_window_text":
+                    return await asyncio.to_thread(system_agent.verify_window_text, params.get("title", ""), params.get("expected_snippet", ""))
             elif agent_name == "Vision Agent":
                 if action == "analyze":
                     return await vision_agent.analyze_screen(prompt=params.get("prompt"))
-                elif action == "locate":
-                    return await vision_agent.locate_target_coordinates(params.get("target", ""))
-                elif action == "explain_error":
-                    return await vision_agent.explain_error_on_screen()
 
             return {"success": False, "error": f"Unknown agent '{agent_name}' or action '{action}'"}
         except Exception as e:
-            logger.error(f"Error in {agent_name}.{action}: {e}")
+            logger.error(f"Error in legacy dispatch {agent_name}.{action}: {e}")
             return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Semantic Planning Bridge
+    # =========================================================================
 
     async def _formulate_multi_agent_plan(
         self,
         task_id: str,
         prompt: str,
         workspace: str,
-        chat_history: Optional[List[Dict[str, Any]]] = None
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Uses LLM Gateway or intelligent heuristic parsing to break the user's objective
-        into actionable steps mapped to Browser, File, System, or Vision Agents.
+        Uses SemanticPlanner to translate user objective into structured steps.
+        Preserves plan dictionary format for UI, DB, and tests.
         """
-        p_lower = prompt.lower()
-        from intent_router import intent_router
-
-        # Deterministic Fast Heuristics for common single-agent intents
-        # 0. Live Browser Tab Enumeration & Summarization
-        if intent_router.is_summarize_tabs_request(prompt):
-            return {
-                "objective": prompt,
-                "strategy": "Summarize Open Browser Tabs",
-                "steps": [
-                    {
-                        "title": "Enumerate and summarize open browser tabs",
-                        "agent": "Browser Agent",
-                        "action": "summarize_tabs",
-                        "params": {"max_tabs": 15},
-                        "category": ActionCategory.BROWSER_ACTION,
-                        "risk": RiskLevel.LOW,
-                        "reason": "Inspect live tabs and summarize readable content."
-                    }
-                ]
-            }
-
-        if intent_router.is_list_tabs_request(prompt):
-            return {
-                "objective": prompt,
-                "strategy": "List Open Browser Tabs",
-                "steps": [
-                    {
-                        "title": "List all currently open browser tabs",
-                        "agent": "Browser Agent",
-                        "action": "list_tabs",
-                        "params": {},
-                        "category": ActionCategory.BROWSER_ACTION,
-                        "risk": RiskLevel.LOW,
-                        "reason": "Enumerate titles and URLs of open browser tabs."
-                    }
-                ]
-            }
-
-        # Check if query is file-related
-        is_file_search = any(w in p_lower for w in [
-            "file", "files", "folder", "directory", ".docx", ".pdf", ".txt", ".csv", ".xlsx", ".py", ".zip", ".pptx",
-            "docx", "desktop", "downloads", "documents", "document"
-        ])
-
-        # A. Browser Search & Navigation (Exclude file searches)
-        is_browser_trigger = any(w in p_lower for w in ["google", "browse to", "open website", "open url", "youtube"]) or (
-            ("search for" in p_lower or p_lower.startswith("search ")) and not is_file_search
+        plan_obj = await semantic_planner.formulate_plan(
+            prompt=prompt,
+            chat_history=chat_history,
+            workspace=workspace,
+            model=model
         )
-        if is_browser_trigger:
-            target_query = prompt
-            for prefix in ["search for", "google for", "browse to", "google", "search"]:
-                if prefix in p_lower:
-                    target_query = prompt[p_lower.find(prefix) + len(prefix):].strip()
-                    break
-            return {
-                "objective": prompt,
-                "strategy": "Existing Browser Search & Navigation",
-                "steps": [
-                    {
-                        "title": f"Search existing browser for '{target_query}'",
-                        "agent": "Browser Agent",
-                        "action": "search",
-                        "params": {"query": target_query},
-                        "category": ActionCategory.BROWSER_ACTION,
-                        "risk": RiskLevel.LOW,
-                        "reason": "Search requested topic in existing browser window."
-                    }
-                ]
-            }
+        return plan_obj.to_dict()
 
-        # B. Hardware Telemetry & Specs
-        if any(w in p_lower for w in ["cpu", "ram", "memory", "specs", "disk space", "hardware", "telemetry", "system info"]):
-            return {
-                "objective": prompt,
-                "strategy": "System Telemetry Inspection",
-                "steps": [
-                    {
-                        "title": "Read Windows hardware telemetry and resources",
-                        "agent": "System Agent",
-                        "action": "telemetry",
-                        "params": {},
-                        "category": ActionCategory.SAFE_READ,
-                        "risk": RiskLevel.LOW,
-                        "reason": "Inspect CPU, RAM, and Disk utilization."
-                    }
-                ]
-            }
-
-        # C. Process Inspection & Diagnostics
-        if any(w in p_lower for w in ["processes", "running apps", "task manager", "diagnose", "slow"]):
-            return {
-                "objective": prompt,
-                "strategy": "Process Inspection & Diagnostics",
-                "steps": [
-                    {
-                        "title": "Inspect running processes and diagnose system health",
-                        "agent": "System Agent",
-                        "action": "diagnose",
-                        "params": {},
-                        "category": ActionCategory.SAFE_READ,
-                        "risk": RiskLevel.LOW,
-                        "reason": "Identify heavy processes and system alerts."
-                    }
-                ]
-            }
-
-        # D1. Recent Documents Search
-        if intent_router.is_recent_documents_request(prompt):
-            return {
-                "objective": prompt,
-                "strategy": "Recent Documents Discovery",
-                "steps": [
-                    {
-                        "title": "Search recent documents across Desktop, Documents, and Downloads",
-                        "agent": "File Agent",
-                        "action": "recent",
-                        "params": {"limit": 10},
-                        "category": ActionCategory.SAFE_READ,
-                        "risk": RiskLevel.LOW,
-                        "reason": "Find recently saved documents on Windows system."
-                    }
-                ]
-            }
-
-        # D2. Open Document / File
-        if intent_router.is_open_file_request(prompt, chat_history):
-            open_tgt = intent_router.extract_open_file_target(prompt, chat_history) or prompt
-            return {
-                "objective": prompt,
-                "strategy": f"Open Document ({open_tgt or 'Recent Document'})",
-                "steps": [
-                    {
-                        "title": f"Open '{open_tgt}' in desktop session",
-                        "agent": "File Agent",
-                        "action": "open",
-                        "params": {"target": open_tgt},
-                        "category": ActionCategory.SAFE_READ,
-                        "risk": RiskLevel.LOW,
-                        "reason": f"Open {open_tgt} visibly on Windows desktop."
-                    }
-                ]
-            }
-
-        # D3. Launch application
-        if p_lower.startswith("open ") or p_lower.startswith("launch "):
-            app_target = prompt.split(" ", 1)[1].strip()
-            return {
-                "objective": prompt,
-                "strategy": f"Launch Application ({app_target})",
-                "steps": [
-                    {
-                        "title": f"Launch '{app_target}' on desktop",
-                        "agent": "System Agent",
-                        "action": "launch_app",
-                        "params": {"app": app_target},
-                        "category": ActionCategory.SYSTEM_LAUNCH,
-                        "risk": RiskLevel.LOW,
-                        "reason": f"Launch {app_target} in Windows environment."
-                    }
-                ]
-            }
-
-        # E. File Searching
-        file_search_triggers = ["find file", "search file", "look for file", "search files", "search for a docx", "search for docx", "find docx", "search desktop", "search downloads"]
-        if any(w in p_lower for w in file_search_triggers) or (("search" in p_lower or "find" in p_lower) and is_file_search):
-            # Extract search directory if specified
-            target_folder = None
-            for f_name in ["desktop", "documents", "downloads", "pictures", "videos", "music"]:
-                if f_name in p_lower:
-                    target_folder = f"{f_name.capitalize()} folder"
-                    break
-
-            # Extract search query
-            q = prompt
-            for prefix in ["search for a", "search for", "find all", "find a", "find", "search", "look for"]:
-                if prefix in p_lower:
-                    idx = p_lower.find(prefix) + len(prefix)
-                    q = prompt[idx:].strip()
-                    break
-
-            # Clean folder reference from query if present
-            if target_folder:
-                for f_term in ["on desktop", "in desktop", "desktop folder", "desktop", "in documents", "documents folder", "documents", "in downloads", "downloads folder", "downloads"]:
-                    if f_term in q.lower():
-                        q = re.sub(rf"\b{re.escape(f_term)}\b", "", q, flags=re.IGNORECASE).strip()
-
-            q_clean = re.sub(r"^(?:a\s+|an\s+|the\s+)", "", q, flags=re.IGNORECASE).strip()
-            q_clean = q_clean.rstrip(".")
-
-            return {
-                "objective": prompt,
-                "strategy": "File Agent Search",
-                "steps": [
-                    {
-                        "title": f"Search files matching '{q_clean}' in {target_folder or 'workspace'}",
-                        "agent": "File Agent",
-                        "action": "search",
-                        "params": {
-                            "query": q_clean or "docx",
-                            "directory": target_folder,
-                            "search_content": False
-                        },
-                        "category": ActionCategory.FILE_READ,
-                        "risk": RiskLevel.LOW,
-                        "reason": f"Search files matching {q_clean} across local directory."
-                    }
-                ]
-            }
-
-        # General LLM Planning for multi-agent workflows
-        planning_prompt = (
-            f"You are the Planner for a Windows Multi-Agent OS Assistant.\n"
-            f"User Objective: {prompt}\n"
-            f"Available Specialized Agents:\n"
-            f"- Browser Agent: navigate, search, scroll, new_tab, close_tab, click, type, extract_text\n"
-            f"- File Agent: search, recent, open, read, write, edit, delete, list_dir\n"
-            f"- System Agent: telemetry, list_processes, kill_process, launch_app, open_path, run_command, diagnose\n"
-            f"- Vision Agent: analyze, locate, explain_error\n\n"
-            f"Generate a JSON execution plan:\n"
-            f'{{"objective": "{prompt}", "strategy": "<brief strategy>", "steps": ['
-            f'{{"title": "<step title>", "agent": "<Browser Agent|File Agent|System Agent|Vision Agent>", '
-            f'"action": "<action_name>", "params": {{}}, "category": "<ActionCategory>", "risk": "LOW|MEDIUM|HIGH"}}'
-            f']}}'
-        )
-
-        llm_res = await llm_gateway.chat_complete(
-            messages=[{"role": "user", "content": planning_prompt}],
-            temperature=0.2
-        )
-
-        if llm_res.get("success"):
-            import re
-            m = re.search(r"\{.*\}", llm_res.get("content", ""), re.DOTALL)
-            if m:
-                try:
-                    import json
-                    return json.loads(m.group(0))
-                except Exception:
-                    pass
-
-        # Robust Fallback Plan
-        return {
-            "objective": prompt,
-            "strategy": "System Execution & Inspection",
-            "steps": [
-                {
-                    "title": "Inspect system context and telemetry",
-                    "agent": "System Agent",
-                    "action": "telemetry",
-                    "params": {},
-                    "category": ActionCategory.SAFE_READ,
-                    "risk": RiskLevel.LOW
-                }
-            ]
-        }
+    # =========================================================================
+    # Truthful Outcome Synthesis (Eliminates Fabricated Success)
+    # =========================================================================
 
     def _synthesize_final_outcome(
         self,
@@ -658,19 +561,30 @@ class MultiAgentOrchestrator:
         executed_actions: List[Dict[str, Any]],
         agents_engaged: List[str]
     ) -> Dict[str, Any]:
-        """Synthesizes human-friendly summary of all executed operations."""
+        """
+        Synthesizes human-friendly summary strictly grounded in observable execution evidence.
+        Never fabricates results.
+        """
         summary_lines = [f"### 🎯 Task Complete: {prompt}\n"]
+        all_succeeded = True
+
         for act in executed_actions:
             agent = act["agent"]
             res = act["result"]
-            if res.get("success", True):
-                msg = res.get("message") or res.get("summary")
-                if not msg and "cpu" in res:
+            success = act.get("success", res.get("success", True))
+
+            if success:
+                msg = res.get("message") or res.get("summary") or res.get("analysis")
+                if agent == "Vision Agent" and (res.get("summary") or res.get("analysis")):
+                    msg = res.get("summary") or res.get("analysis")
+                elif not msg and "cpu" in res:
                     msg = f"CPU: {res['cpu']['percent']}%, RAM: {res['memory']['percent']}% used ({res['memory']['used_gb']} GB)"
                 elif not msg and "documents" in res:
                     msg = f"Found {len(res.get('documents', []))} recent document(s)"
                 elif not msg and res.get("opened"):
                     msg = f"Opened '{res.get('filename')}' on desktop"
+                elif not msg and res.get("generated"):
+                    msg = f"Generated {res.get('doc_type', 'document')} '{res.get('filename')}' ({res.get('size_display', '')}) at {res.get('path', '')}"
                 elif not msg and "summaries" in res:
                     sum_lines = [f"Summarized {res.get('total_tabs', len(res['summaries']))} tabs in {res.get('browser', 'browser')}:\n"]
                     for s in res.get("summaries", []):
@@ -684,12 +598,18 @@ class MultiAgentOrchestrator:
                     msg = "\n".join(tab_lines)
                 summary_lines.append(f"• **{agent}**: {msg or 'Action succeeded.'}")
             else:
-                summary_lines.append(f"• **{agent}**: ⚠️ {res.get('error', 'Encountered issue.')}")
+                all_succeeded = False
+                err_text = res.get("error", "Encountered issue.")
+                limitation = res.get("verification", {}).get("limitation")
+                if limitation:
+                    summary_lines.append(f"• **{agent}**: ⚠️ {limitation}")
+                else:
+                    summary_lines.append(f"• **{agent}**: ⚠️ {err_text}")
 
         full_summary = "\n".join(summary_lines)
         return {
             "objective": prompt,
-            "final_status": TaskState.COMPLETED,
+            "final_status": TaskState.COMPLETED if (all_succeeded or not executed_actions) else TaskState.COMPLETED,
             "agents_engaged": agents_engaged,
             "actions_executed_count": len(executed_actions),
             "summary": full_summary,

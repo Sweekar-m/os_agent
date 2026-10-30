@@ -66,6 +66,13 @@ class LLMGateway:
         Executes a standard chat completion request across any configured provider.
         """
         selected_model = model or self.chat_model
+        if not self.api_key and "localhost" not in self.base_url and "127.0.0.1" not in self.base_url:
+            return {
+                "success": False,
+                "error": "No API key configured for remote LLM provider",
+                "content": None
+            }
+
         headers = {
             "Content-Type": "application/json"
         }

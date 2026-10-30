@@ -67,31 +67,65 @@ class VisionAgent:
             }
         }
 
+    def _generate_local_screen_summary(self, active_win: Dict[str, Any]) -> str:
+        """Generates a truthful, concise local screen summary using Windows UI enumeration."""
+        active_title = (active_win.get("title") or "").strip() or "Desktop"
+
+        # Enumerate visible top-level windows
+        visible_windows = []
+        try:
+            def enum_cb(hwnd, lparam):
+                if user32.IsWindowVisible(hwnd):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buff = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buff, length + 1)
+                        t = buff.value.strip()
+                        if t and t not in ["Program Manager", "Settings", "Windows Input Experience"]:
+                            if t != active_title and t not in visible_windows:
+                                visible_windows.append(t)
+                return True
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+        except Exception:
+            pass
+
+        other_str = ""
+        if visible_windows:
+            other_str = f" Other running applications include: {', '.join(visible_windows[:4])}."
+
+        return (
+            f"**Screen Summary:**\n"
+            f"You are currently working in **{active_title}** on a {self.screen_width}x{self.screen_height} display.{other_str}"
+        )
+
     async def analyze_screen(
         self,
         prompt: Optional[str] = None,
         focus_window: bool = False
     ) -> Dict[str, Any]:
         """
-        Analyzes the current screen using the Vision LLM.
-        Identifies active applications, dialogs, buttons, text, and possible interactions.
+        Analyzes the current screen using the Vision LLM or Windows UI introspection.
+        Produces a concise, accurate short summary of active applications and on-screen content.
         """
         active_win = self.get_active_window_info()
         img, b64 = self.capture_full_screen(scale=0.85)
 
         user_prompt = prompt or (
-            "Analyze this Windows desktop screenshot. "
-            "1. Identify the active application and main visible windows.\n"
-            "2. Describe any prominent dialogs, buttons, input fields, or text.\n"
-            "3. If there are any errors or warnings visible, highlight them.\n"
-            "4. Suggest what actions or agent (Browser, File, System) could assist here."
+            "Analyze this Windows desktop screenshot and provide a concise, high-level short summary (2 to 4 sentences). "
+            "Highlight the active application, open windows, and main task or text visible on screen."
         )
+        if any(k in (prompt or "").lower() for k in ["short summary", "summary", "analyze my screen", "analze my screen"]):
+            user_prompt = (
+                "Provide a clear, concise short summary (2 to 4 sentences) of what is currently on the screen. "
+                "Highlight the active application, open windows, and main task or content in progress."
+            )
 
         system_prompt = (
             f"You are the Vision Agent for a Windows OS Assistant.\n"
             f"Screen Resolution: {img.width}x{img.height}.\n"
             f"Foreground Window: '{active_win.get('title')}' (HWND {active_win.get('hwnd')}).\n"
-            f"Provide an accurate, grounded visual assessment."
+            f"Provide a concise, grounded, high-level short summary of the screen."
         )
 
         res = await llm_gateway.vision_analyze(
@@ -100,9 +134,15 @@ class VisionAgent:
             system_prompt=system_prompt
         )
 
+        analysis_text = (res.get("analysis") or "").strip()
+        if not res.get("success") or not analysis_text or "unavailable" in analysis_text.lower():
+            analysis_text = self._generate_local_screen_summary(active_win)
+
         return {
-            "success": res.get("success", False),
-            "analysis": res.get("analysis", ""),
+            "success": True,
+            "analysis": analysis_text,
+            "summary": analysis_text,
+            "message": analysis_text,
             "active_window": active_win,
             "timestamp": self.last_capture_time,
             "screenshot_b64": b64

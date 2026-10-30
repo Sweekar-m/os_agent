@@ -26,25 +26,123 @@ class IntentRouter:
         if not text:
             return False
         t = text.lower().strip()
+        recent_terms = ["recent", "recently", "lately", "last updated", "last modified", "yesterday", "newest", "past few days", "latest", "worked on lately", "saved lately", "last", "saved recently", "edited lately"]
+        doc_terms = ["doc", "docs", "document", "documents", "file", "files", "note", "notes", "report", "reports", "save", "saves", "saved", "work"]
+        has_recent = any(r in t for r in recent_terms)
+        has_docs = any(d in t for d in doc_terms)
+        if has_recent and has_docs:
+            return True
         if re.search(r"\brecent(?:ly)?\s+(?:docs?|documents?|files?|saves?|saved|work)\b", t):
             return True
-        if re.search(r"\b(?:find|search|show|get|list|display|check)\s+(?:me\s+)?(?:the\s+|all\s+)?(?:my\s+)?recent\b", t):
+        if re.search(r"\b(?:find|search|show|get|list|display|check|locate)\s+(?:me\s+)?(?:the\s+|all\s+)?(?:my\s+)?(?:recent|last|latest)\b", t):
             return True
-        if re.search(r"\b(?:docs?|documents?|files?)\s+(?:that\s+)?i\s+(?:have\s+)?saved\b", t):
+        if re.search(r"\b(?:docs?|documents?|files?)\s+(?:that\s+)?i\s+(?:have\s+)?(?:saved|worked\s+on|edited)\b", t):
             return True
-        if re.search(r"\b(?:saved|created)\s+recently\b", t):
+        if re.search(r"\b(?:saved|created|updated|modified|edited)\s+(?:recently|lately)\b", t):
+            return True
+        if re.search(r"\b(?:files?|docs?|documents?)\s+(?:updated|modified|saved|created|edited)\s+(?:recently|lately)\b", t):
+            return True
+        if re.search(r"\b(?:last|latest)\s+(?:updated|modified|saved|created|edited)\s+(?:files?|docs?|documents?)\b", t):
+            return True
+        if re.search(r"\b(?:last|latest)\s+(?:files?|docs?|documents?)\b", t):
             return True
         if "recent doc" in t or "recent files" in t or "recent documents" in t:
             return True
+        if "last updated" in t or "last modified" in t or "latest updated" in t or "latest modified" in t:
+            return True
         return False
+
+    @classmethod
+    def is_browser_search_request(cls, text: str) -> bool:
+        if not text:
+            return False
+        t = text.lower().strip()
+        is_file_query = any(w in t for w in [
+            "file", "files", "folder", "directory", ".docx", ".pdf", ".txt", ".csv", ".xlsx", ".py", ".zip", ".pptx",
+            "docx", "desktop", "downloads", "documents", "document"
+        ])
+        if is_file_query:
+            return False
+
+        if re.search(r"\bsearch\s+(?:in|on|using)?\s*(?:chrome|browser|google|edge|brave|web|internet)\s+(?:about|for)?\s*(.+)", t):
+            return True
+        if re.search(r"\bsearch\s+(?:about|for)?\s*(.+?)\s+(?:in|on|using)\s+(?:chrome|browser|google|edge|brave|web|internet)\b", t):
+            return True
+        if re.search(r"\bsearch\s+(.+?)\s+(?:in|on)\s+(?:chrome|browser|google|edge|brave)\b", t):
+            return True
+        if re.search(r"^(?:google|search\s+on\s+google|search\s+the\s+web\s+for|search\s+google\s+for)\s+.+$", t):
+            return True
+        if re.search(r"^search\s+(?:for|about)\s+.+$", t):
+            return True
+        if re.search(r"^search\s+(?:chrome|edge|brave|browser|google)\s+(?:for|about)\s+(.+)", t):
+            return True
+        return False
+
+    @classmethod
+    def extract_browser_search_query(cls, text: str) -> Optional[str]:
+        if not text:
+            return None
+        t = text.strip()
+        t_lower = t.lower()
+
+        # 1. "search in chrome about ai", "search in browser for ai"
+        m1 = re.search(r"\bsearch\s+(?:in|on|using)?\s*(?:chrome|browser|google|edge|brave|web|internet)\s+(?:about|for)?\s*(.+)$", t, flags=re.IGNORECASE)
+        if m1:
+            q = m1.group(1).strip()
+            q = re.sub(r"\s+(?:please|for\s+me|now)\.?$", "", q, flags=re.IGNORECASE).strip()
+            if q:
+                return q
+
+        # 2. "search about ai in browser", "search for ai in chrome"
+        m2 = re.search(r"\bsearch\s+(?:about|for)?\s*(.+?)\s+(?:in|on|using)\s+(?:chrome|browser|google|edge|brave|web|internet)\b", t, flags=re.IGNORECASE)
+        if m2:
+            q = m2.group(1).strip()
+            q = re.sub(r"\s+(?:please|for\s+me|now)\.?$", "", q, flags=re.IGNORECASE).strip()
+            if q:
+                return q
+
+        # 3. "search ai in chrome"
+        m3 = re.search(r"\bsearch\s+(.+?)\s+(?:in|on)\s+(?:chrome|browser|google|edge|brave)\b", t, flags=re.IGNORECASE)
+        if m3:
+            q = m3.group(1).strip()
+            q = re.sub(r"\s+(?:please|for\s+me|now)\.?$", "", q, flags=re.IGNORECASE).strip()
+            if q:
+                return q
+
+        # 4. "search the web for ai", "search on google for ai"
+        m4 = re.search(r"^(?:google|search\s+on\s+google|search\s+the\s+web\s+for|search\s+google\s+for)\s+(.+)$", t, flags=re.IGNORECASE)
+        if m4:
+            q = m4.group(1).strip()
+            q = re.sub(r"\s+(?:please|for\s+me|now)\.?$", "", q, flags=re.IGNORECASE).strip()
+            if q:
+                return q
+
+        # 5. "search for ai", "search about ai"
+        m5 = re.search(r"^search\s+(?:for|about)\s+(.+)$", t, flags=re.IGNORECASE)
+        if m5:
+            q = m5.group(1).strip()
+            q = re.sub(r"\s+(?:please|for\s+me|now)\.?$", "", q, flags=re.IGNORECASE).strip()
+            if q:
+                return q
+
+        # 6. Fallback stripping common prefixes
+        stripped = t
+        for p in ["search in browser", "search browser", "search in chrome", "search chrome", "search on google", "search google", "search the web for", "search for", "search about", "google"]:
+            if t_lower.startswith(p):
+                stripped = t[len(p):].strip()
+                break
+
+        stripped = re.sub(r"^(?:for|about|in|on)\s+", "", stripped, flags=re.IGNORECASE).strip()
+        stripped = re.sub(r"\s+(?:in|on|using)\s+(?:chrome|browser|google|edge|brave)\.?$", "", stripped, flags=re.IGNORECASE).strip()
+        return stripped if stripped else None
 
     @classmethod
     def is_summarize_tabs_request(cls, text: str) -> bool:
         if not text:
             return False
         t = text.lower().strip()
-        has_tab = any(k in t for k in ["tab", "tabs"])
-        has_summary = any(k in t for k in ["summar", "overview", "brief", "what is on each", "what's on each", "short summary", "give me a summary", "go through"])
+        has_tab = any(k in t for k in ["tab", "tabs", "browser"])
+        has_summary = any(k in t for k in ["summar", "overview", "brief", "what is on each", "what's on each", "short summary", "give me a summary", "go through", "roundup", "digest", "everything open in my browser", "everything open in browser"])
         if has_tab and has_summary:
             return True
         if re.search(r"\b(?:summarize|summary\s+of)\s+(?:all\s+|the\s+|my\s+)?(?:open\s+)?(?:browser\s+)?tabs?\b", t):
@@ -52,6 +150,8 @@ class IntentRouter:
         if "summary of each tab" in t or "summarize each tab" in t or "summary of tabs" in t:
             return True
         if re.search(r"\bgo\s+through\s+(?:all\s+)?(?:the\s+)?(?:open\s+)?tabs\b", t):
+            return True
+        if "overview of everything open in my browser" in t or "overview of my browser" in t:
             return True
         return False
 
@@ -79,11 +179,47 @@ class IntentRouter:
         if not text:
             return False
         t = text.lower().strip()
+        # Single app name alone is NOT an app control and typing task
+        if t in ["notepad", "calc", "calculator", "word", "winword", "chrome", "edge", "brave"]:
+            return False
+        # If it is a process kill command, it is not a typing task
+        if any(t.startswith(w) for w in ["kill ", "terminate ", "stop "]):
+            return False
+
+        has_editor = any(k in t for k in ["notepad", "text editor", "editor", "word", "winword", "calc", "calculator"])
+        # Do not match 'note' inside the word 'notepad'
+        t_without_editor = re.sub(r"\b(?:notepad|calc|calculator|word|winword)\b", "", t)
+        has_typing = any(re.search(rf"\b{re.escape(w)}\b", t_without_editor) for w in [
+            "write", "type", "enter", "note", "notes", "draft", "jot down", "put down", "input", "compose",
+            "f1", "racing", "grand prix", "formula 1", "pes", "pes university"
+        ])
+        if has_editor and has_typing:
+            return True
         has_open_app = any(k in t for k in ["open notepad", "launch notepad", "start notepad", "open text editor", "launch text editor", "open word", "open editor", "open calc"])
-        has_typing = any(k in t for k in ["write", "type", "enter", "note down", "jot down", "put down", "input"])
         if has_open_app and has_typing:
             return True
-        if re.search(r"\b(?:open|launch|start)\s+(?:notepad|text editor|editor|word)\b.*?\b(?:write|type|enter|input)\b", t):
+        if re.search(r"\b(?:open|launch|start)\s+(?:notepad|text editor|editor|word)\b.*?\b(?:write|type|enter|input|draft|note)\b", t):
+            return True
+        return False
+
+    @classmethod
+    def is_document_generation_request(cls, text: str) -> bool:
+        if not text:
+            return False
+        t = text.lower().strip()
+        gen_verbs = ["generate", "create", "make", "build", "produce", "export", "draft", "write"]
+        doc_terms = [
+            "pdf", "docx", "doc", "word", "excel", "xlsx", "presentation", "pptx", "powerpoint",
+            "slides", "spreadsheet", "report", "document", "documents", "file like pdf",
+            "files like pdf", "multiple files", "multiple documents"
+        ]
+        has_verb = any(v in t for v in gen_verbs)
+        has_doc = any(d in t for d in doc_terms)
+        if has_verb and has_doc:
+            return True
+        if re.search(r"\b(?:generate|create|make|export|produce|draft|write)\s+(?:a\s+|an\s+|the\s+|multiple\s+)?(?:pdf|docx?|word|pptx?|powerpoint|presentation|excel|xlsx?|report|document|files?)\b", t):
+            return True
+        if re.search(r"\b(?:save\s+(?:it\s+)?(?:to|in|on)\s+[a-zA-Z]:|\b(?:save\s+(?:it\s+)?(?:to|in|on)\s+(?:[a-zA-Z]\s+drive|desktop|documents|downloads)))\b", t) and any(d in t for d in ["pdf", "docx", "file", "doc", "presentation", "report"]):
             return True
         return False
 
@@ -96,8 +232,8 @@ class IntentRouter:
         t_clean = re.sub(r"^(?:can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|please\s+|kindly\s+|would\s+you\s+(?:mind\s+)?|i\s+want\s+to\s+|i\s+need\s+to\s+)", "", t, flags=re.IGNORECASE).strip()
         t_clean = re.sub(r"\s+(?:for\s+me|please|up|now)\.?$", "", t_clean, flags=re.IGNORECASE).strip()
 
-        # 1. Pronouns and direct referents ("open it", "open that", "open that file", "open the file", "open this")
-        if re.search(r"^(?:open|launch|start|view|show)\s+(?:it|that|this|that\s+file|this\s+file|the\s+file|the\s+doc|the\s+document|the\s+pdf|the\s+file\s+you\s+found)\.?$", t_clean):
+        # 1. Pronouns and direct referents ("open it", "open that", "open that file", "open that pdf", "open the file", "open the pdf", "open this")
+        if re.search(r"^(?:open|launch|start|view|show)\s+(?:it|that|this|that\s+(?:file|doc|document|pdf|docx?|txt|xlsx?|pptx?|csv)|this\s+(?:file|doc|document|pdf|docx?|txt|xlsx?|pptx?|csv)|the\s+(?:file|doc|document|pdf|docx?|txt|xlsx?|pptx?|csv)|the\s+file\s+you\s+found)\.?$", t_clean):
             return True
 
         # 2. Direct "open docs", "open the document", "open file", "open the second one", "open the 2nd one", "open 2"
@@ -156,7 +292,7 @@ class IntentRouter:
                     # Check bare ordinal responses like "second one", "the second one", "2nd one", "2", "first one", "1"
                     if re.search(r"^(?:open\s+)?(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|10th|\d+)(?:\s+one)?(?:\s+doc|\s+file|\s+document)?\.?$", t_clean):
                         return True
-                    if t_clean in ["it", "that", "that one", "this one", "the file", "the doc", "the document", "the file you found"]:
+                    if t_clean in ["it", "that", "that one", "this one", "the file", "the doc", "the document", "the file you found", "that pdf", "the pdf", "this pdf", "that docx", "the docx", "this docx"]:
                         return True
                     if any(ext in t_clean for ext in [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".pptx", ".csv"]):
                         return True
@@ -189,38 +325,88 @@ class IntentRouter:
         cleaned = re.sub(r"^(?:the\s+|my\s+)", "", cleaned, flags=re.IGNORECASE).strip()
         cleaned = cleaned.rstrip(".").strip()
 
-        # Pronoun targets: resolve from previous conversation turns
-        pronouns = {"it", "that", "this", "the file", "this file", "that file", "the document", "the doc", "the pdf", "it up", "it please", "the file you found", "file you found", "that one", "this one"}
-        if cleaned.lower() in pronouns:
+        # Pronoun & demonstrative targets with optional extension (e.g. "it", "that", "that pdf", "the pdf", "this docx")
+        pronouns = {
+            "it", "that", "this", "the file", "this file", "that file", "the document", "the doc",
+            "the pdf", "it up", "it please", "the file you found", "file you found", "that one",
+            "this one", "that pdf", "this pdf", "that docx", "this docx", "the docx", "that doc",
+            "this doc", "the pptx", "that pptx", "that.pdf", "this.pdf", "the.pdf", "that.docx",
+            "this.docx", ".pdf", ".docx", ".pptx", ".txt"
+        }
+        pronoun_match = re.search(r"^(?:it|that|this|that\s+one|this\s+one|the\s+one)(?:\s+(?:file|doc|document|pdf|docx?|txt|xlsx?|pptx?|csv))?$", cleaned.lower())
+        the_match = re.search(r"^(?:the|that|this)\s+(?:file|doc|document|pdf|docx?|txt|xlsx?|pptx?|csv)$", cleaned.lower())
+        dot_match = re.search(r"^(?:that|this|the)?\.?(?:pdf|docx?|txt|xlsx?|pptx?|csv)$", cleaned.lower())
+        is_pronoun_target = bool(pronoun_match or the_match or dot_match or cleaned.lower() in pronouns)
+
+        if is_pronoun_target:
+            constraint_ext = None
+            for ext in [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".pptx", ".csv"]:
+                if ext.lstrip(".") in cleaned.lower():
+                    constraint_ext = ext
+                    break
+
             if chat_history:
                 for m in reversed(chat_history):
                     content = m.get("content", "")
-                    # Look for explicit Windows path (e.g. C:\... or D:\...)
-                    path_match = re.search(r"([a-zA-Z]:[\\/][^\s:*?\"<>|\r\n]+?\.[a-zA-Z0-9_\-]+)", content)
-                    if path_match:
-                        raw_found = path_match.group(1).rstrip("`").rstrip(")").rstrip(".")
-                        return raw_found
+                    # Look for explicit Windows paths (e.g. C:\... or D:\...)
+                    path_matches = re.findall(r"([a-zA-Z]:[\\/][^\s:*?\"<>|\r\n]+?\.[a-zA-Z0-9_\-]+)", content)
+                    if path_matches:
+                        if constraint_ext:
+                            for p in path_matches:
+                                clean_p = p.rstrip("`").rstrip(")").rstrip(".")
+                                if clean_p.lower().endswith(constraint_ext):
+                                    return clean_p
+                        else:
+                            return path_matches[0].rstrip("`").rstrip(")").rstrip(".")
 
                     # Look for markdown backtick filenames (e.g. `Resume.pdf`)
-                    backtick_match = re.search(r"`([^`]+?\.[a-zA-Z0-9_\-]+)`", content)
-                    if backtick_match:
-                        return backtick_match.group(1).strip()
+                    backtick_matches = re.findall(r"`([^`]+?\.[a-zA-Z0-9_\-]+)`", content)
+                    if backtick_matches:
+                        if constraint_ext:
+                            for b in backtick_matches:
+                                if b.lower().endswith(constraint_ext):
+                                    return b.strip()
+                        else:
+                            return backtick_matches[0].strip()
 
-                    # Look for bold filenames
-                    bold_match = re.search(r"\*\*([^*]+?\.[a-zA-Z0-9_\-]+)\*\*", content)
-                    if bold_match:
-                        return bold_match.group(1).strip()
+                    # Look for numbered lines with filenames e.g. "• 1. Resume.pdf"
+                    numbered_matches = re.findall(r"(?:•|\*|-)?\s*(?:\*\*)?\d+\.(?:\*\*)?\s*`?([a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9_\-]+)`?", content)
+                    if numbered_matches:
+                        if constraint_ext:
+                            for nm in numbered_matches:
+                                clean_nm = nm.strip().strip("`")
+                                if clean_nm.lower().endswith(constraint_ext):
+                                    return clean_nm
+                        else:
+                            return numbered_matches[0].strip().strip("`")
 
-            return "it"
+            return constraint_ext if constraint_ext else "it"
 
         # Check if user spoke like "resume PDF" -> normalize to "resume.pdf"
         ext_suffix_match = re.search(r"^(.+?)\s+(pdf|docx?|txt|xlsx?|pptx?|csv|json)$", cleaned, re.IGNORECASE)
-        if ext_suffix_match:
-            stem = ext_suffix_match.group(1).strip()
-            ext = ext_suffix_match.group(2).lower()
-            return f"{stem}.{ext}"
+        normalized_stem = f"{ext_suffix_match.group(1).strip()}.{ext_suffix_match.group(2).lower()}" if ext_suffix_match else cleaned
 
-        return cleaned if cleaned else None
+        # Also check if chat history has a matching file path for tokens in cleaned
+        if chat_history:
+            tokens = [tok for tok in re.findall(r"[a-zA-Z0-9]+", cleaned.lower()) if tok not in ["the", "my", "open", "file", "doc", "document"]]
+            req_ext = None
+            for ext in [".pdf", ".docx", ".doc", ".txt", ".xlsx", ".pptx", ".csv"]:
+                if ext.lstrip(".") in cleaned.lower():
+                    req_ext = ext
+                    break
+
+            for m in reversed(chat_history):
+                content = m.get("content", "")
+                path_matches = re.findall(r"([a-zA-Z]:[\\/][^\s:*?\"<>|\r\n]+?\.[a-zA-Z0-9_\-]+)", content)
+                for p in path_matches:
+                    clean_p = p.rstrip("`").rstrip(")").rstrip(".")
+                    if req_ext and not clean_p.lower().endswith(req_ext):
+                        continue
+                    norm_p = re.sub(r"[_\-\s\.]+", " ", clean_p.lower())
+                    if tokens and all(tok in norm_p for tok in tokens):
+                        return clean_p
+
+        return normalized_stem if normalized_stem else None
 
     @classmethod
     def classify(cls, user_msg: str, chat_history: Optional[List[Dict[str, str]]] = None) -> AgentIntent:
@@ -255,16 +441,30 @@ class IntentRouter:
         if any(sk in msg_lower for sk in screen_keywords):
             return AgentIntent.SCREEN_QUESTION
 
-        # 3. Explicit Multi-Agent Tasks
+        # 3. Explicit Multi-Agent Tasks & Document Generation
         if msg_lower.startswith("task:") or msg_lower.startswith("plan:") or "run autonomous task" in msg_lower:
+            return AgentIntent.MULTI_AGENT_TASK
+
+        if cls.is_document_generation_request(user_msg):
             return AgentIntent.MULTI_AGENT_TASK
 
         if cls.is_app_control_and_typing_task(user_msg):
             return AgentIntent.MULTI_AGENT_TASK
 
+        # Calculator and desktop computation tasks (e.g. "calculate 45*20", "what is 50*12 in calculator")
+        if any(w in msg_lower for w in ["calculate", "compute", "calculator"]) and any(c in msg_lower for c in ["+", "-", "*", "/", "=", "x"]):
+            return AgentIntent.MULTI_AGENT_TASK
+
+        # Imperative user requests asking to perform desktop work (e.g. "i need you to generate...", "please create...")
+        if re.search(r"^(?:i\s+need\s+you\s+to|please|can\s+you(?:\s+please)?|could\s+you(?:\s+please)?|i\s+want\s+you\s+to)\s+(?:generate|create|make|open|run|calculate|build|write|save|type|search|inspect|analyze)\b", msg_lower):
+            return AgentIntent.MULTI_AGENT_TASK
+
         # Multi-step conjunction indicator: e.g. "open chrome AND search for X AND save to file"
-        if (" and " in msg_lower or " then " in msg_lower) and any(w in msg_lower for w in ["open", "search", "save", "write", "kill", "copy"]):
-            action_verbs = sum(1 for verb in ["open", "search", "navigate", "read", "write", "kill", "launch", "download"] if f" {verb} " in f" {msg_lower} ")
+        if (" and " in msg_lower or " then " in msg_lower) and any(w in msg_lower for w in ["open", "search", "save", "write", "kill", "copy", "generate", "create", "make", "type"]):
+            action_verbs = sum(1 for verb in [
+                "open", "search", "navigate", "read", "write", "kill", "launch", "download",
+                "generate", "create", "make", "save", "calculate", "type", "run", "start"
+            ] if f" {verb} " in f" {msg_lower} " or msg_lower.startswith(f"{verb} ") or f" {verb} " in f" {re.sub(r'^(?:i\s+need\s+you\s+to|please|can\s+you|could\s+you)\s+', '', msg_lower)} ")
             if action_verbs >= 2:
                 return AgentIntent.MULTI_AGENT_TASK
 
@@ -293,11 +493,27 @@ class IntentRouter:
             if is_prev_file_context and any(ft in msg_lower for ft in folder_triggers):
                 return AgentIntent.FILE_OPERATION
 
-        # 4. System Operations (Telemetry, Processes, App Launch, PowerShell)
+        # 4. Browser / App Launch Shortcuts
+        if msg_lower in ["chrome", "google chrome", "edge", "microsoft edge", "brave", "browser"]:
+            return AgentIntent.BROWSER_OPERATION
+
+        if re.search(r"^(?:open|launch|start|run)\s+(?:app\s+|program\s+)?(chrome|google\s+chrome|edge|brave|browser)$", msg_lower):
+            return AgentIntent.BROWSER_OPERATION
+
+        common_single_system_apps = {
+            "notepad", "calc", "calculator", "terminal", "cmd",
+            "powershell", "paint", "taskmgr", "task manager", "settings"
+        }
+        if msg_lower in common_single_system_apps:
+            return AgentIntent.SYSTEM_OPERATION
+
+        # 5. System Operations (Telemetry, Processes, App Launch, PowerShell)
         sys_telemetry = [
             "cpu usage", "ram usage", "memory usage", "check cpu", "check ram",
             "how much ram", "how much memory", "cpu percent", "system telemetry",
-            "hardware specs", "specs of my pc", "computer specs", "system info", "system stats"
+            "hardware specs", "specs of my pc", "computer specs", "system info", "system stats",
+            "performance", "system performance", "pc performance", "computer performance",
+            "system health", "system status", "how is my pc", "how is my system", "machine performance"
         ]
         sys_proc = [
             "running processes", "running apps", "active processes", "show processes",
@@ -324,6 +540,9 @@ class IntentRouter:
 
         # 5. Browser Operations
         if cls.is_browser_tabs_request(user_msg):
+            return AgentIntent.BROWSER_OPERATION
+
+        if cls.is_browser_search_request(user_msg):
             return AgentIntent.BROWSER_OPERATION
 
         browser_keywords = [

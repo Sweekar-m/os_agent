@@ -45,6 +45,16 @@ except ImportError:
     HAS_PDF = False
 
 try:
+    import reportlab
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors as r_colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+    HAS_REPORTLAB = True
+except ImportError:
+    HAS_REPORTLAB = False
+
+try:
     import win32com.client
     import pythoncom
     HAS_WIN32COM = True
@@ -359,6 +369,125 @@ class DocAgent:
         result = _ppt.create_ppt(file_path, title, slides_data, theme=theme)
         self.active_file = str(Path(file_path).resolve())
         return result
+
+    def create_pdf(self, file_path: str, title: str,
+                   sections: List[Dict[str, Any]], theme: str = "professional") -> Dict[str, Any]:
+        """Generates a styled, multi-page professional PDF document using ReportLab."""
+        if not HAS_REPORTLAB:
+            return {"status": "error", "message": "reportlab not installed"}
+
+        try:
+            THEMES = {
+                "professional": {
+                    "primary": r_colors.HexColor("#0f172a"),
+                    "secondary": r_colors.HexColor("#0284c7"),
+                    "body": r_colors.HexColor("#334155"),
+                    "accent": r_colors.HexColor("#10b981")
+                },
+                "modern": {
+                    "primary": r_colors.HexColor("#1e1b4b"),
+                    "secondary": r_colors.HexColor("#6366f1"),
+                    "body": r_colors.HexColor("#1f2937"),
+                    "accent": r_colors.HexColor("#8b5cf6")
+                },
+                "corporate": {
+                    "primary": r_colors.HexColor("#1c1917"),
+                    "secondary": r_colors.HexColor("#ea580c"),
+                    "body": r_colors.HexColor("#292524"),
+                    "accent": r_colors.HexColor("#f59e0b")
+                }
+            }
+            c = THEMES.get(theme, THEMES["professional"])
+
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+            doc = SimpleDocTemplate(
+                file_path,
+                pagesize=letter,
+                leftMargin=54,
+                rightMargin=54,
+                topMargin=54,
+                bottomMargin=54
+            )
+
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                'DocTitle',
+                parent=styles['Title'],
+                fontName='Helvetica-Bold',
+                fontSize=24,
+                leading=28,
+                textColor=c["primary"],
+                alignment=0,
+                spaceAfter=6
+            )
+            date_style = ParagraphStyle(
+                'DocDate',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=10,
+                leading=14,
+                textColor=c["secondary"],
+                spaceAfter=14
+            )
+            h2_style = ParagraphStyle(
+                'DocH2',
+                parent=styles['Heading2'],
+                fontName='Helvetica-Bold',
+                fontSize=14,
+                leading=18,
+                textColor=c["secondary"],
+                spaceBefore=14,
+                spaceAfter=6
+            )
+            body_style = ParagraphStyle(
+                'DocBody',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=10.5,
+                leading=15,
+                textColor=c["body"],
+                spaceAfter=8
+            )
+            bullet_style = ParagraphStyle(
+                'DocBullet',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=10,
+                leading=14,
+                textColor=c["body"],
+                leftIndent=18,
+                firstLineIndent=-10,
+                spaceAfter=4
+            )
+
+            story = []
+            story.append(Paragraph(title, title_style))
+            date_str = datetime.datetime.now().strftime("%B %d, %Y")
+            story.append(Paragraph(f"Generated on {date_str} • Prepared by Windows OS Assistant", date_style))
+            story.append(HRFlowable(width="100%", thickness=1.5, color=c["secondary"], spaceBefore=2, spaceAfter=14))
+
+            for sec in sections:
+                heading = sec.get("heading", "")
+                if heading:
+                    story.append(Paragraph(heading, h2_style))
+                for p in sec.get("paragraphs", []):
+                    story.append(Paragraph(p, body_style))
+                for b in sec.get("bullets", []):
+                    story.append(Paragraph(f"• {b}", bullet_style))
+                story.append(Spacer(1, 8))
+
+            doc.build(story)
+            self.active_file = str(Path(file_path).resolve())
+            return {
+                "status": "success",
+                "action": "create_pdf",
+                "file": file_path,
+                "title": title,
+                "section_count": len(sections),
+                "theme": theme
+            }
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to create PDF: {e}"}
 
     def create_docx(self, file_path: str, title: str,
                     sections: List[Dict[str, Any]], theme: str = "professional") -> Dict[str, Any]:

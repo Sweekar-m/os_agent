@@ -4,7 +4,12 @@ import tempfile
 import shutil
 import os
 import asyncio
+import sys
 from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi.testclient import TestClient
 
@@ -292,11 +297,170 @@ class TestRealExecutionArchitecture(unittest.TestCase):
             ("Find my recent documents", AgentIntent.FILE_OPERATION),
             ("Open the document I saved earlier", AgentIntent.FILE_OPERATION),
             ("What's on my screen right now?", AgentIntent.SCREEN_QUESTION),
+            ("find the last updated files", AgentIntent.FILE_OPERATION),
+            ("last updated files", AgentIntent.FILE_OPERATION),
+            ("tell me about system performance", AgentIntent.SYSTEM_OPERATION),
+            ("system performance", AgentIntent.SYSTEM_OPERATION),
+            ("search in chrome about ai", AgentIntent.BROWSER_OPERATION),
+            ("search about ai in browser", AgentIntent.BROWSER_OPERATION),
+            ("chrome", AgentIntent.BROWSER_OPERATION),
+            ("notepad", AgentIntent.SYSTEM_OPERATION),
         ]
         for prompt, expected_intent in test_prompts:
             actual = intent_router.classify(prompt)
             self.assertEqual(actual, expected_intent, f"Prompt '{prompt}' misclassified as {actual}, expected {expected_intent}")
 
+    # 11. "find the last updated files" executes real recent documents search
+    def test_11_find_last_updated_files_executes_file_agent(self):
+        mock_docs = [
+            {"id": 1, "filename": "Budget_2026.xlsx", "path": "C:\\Docs\\Budget_2026.xlsx", "modified": "2026-10-27 15:30", "size_display": "45 KB"},
+            {"id": 2, "filename": "Notes_Project.txt", "path": "C:\\Docs\\Notes_Project.txt", "modified": "2026-10-27 14:10", "size_display": "2 KB"}
+        ]
+        with patch.object(file_agent, "find_recent_documents", return_value={"success": True, "count": 2, "total_found": 2, "documents": mock_docs}) as mock_recent:
+            resp = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "find the last updated files"}]
+            })
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            mock_recent.assert_called_once_with(limit=10)
+            self.assertIn("Budget_2026.xlsx", data["content"])
+            self.assertIn("Notes_Project.txt", data["content"])
+            self.assertEqual(len(data["actions"]), 1)
+            self.assertEqual(data["actions"][0]["type"], "recent_documents")
+            self.assertEqual(data["actions"][0]["status"], "success")
+
+    # 12. "tell me about system performance" executes real telemetry
+    def test_12_tell_me_about_system_performance_executes_telemetry(self):
+        mock_tel = {
+            "success": True,
+            "cpu": {"percent": 18.5, "cores_physical": 8, "cores_logical": 16},
+            "memory": {"percent": 45.2, "used_gb": 7.2, "total_gb": 16.0},
+            "os": {"platform": "Windows", "release": "11", "architecture": "64bit", "hostname": "DESKTOP-TEST", "uptime_hours": 12.4},
+            "disk": {"percent": 62.0, "used_gb": 310.0, "total_gb": 500.0}
+        }
+        with patch.object(system_agent, "get_system_telemetry", return_value=mock_tel) as mock_get_tel:
+            resp = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "tell me about system performance"}]
+            })
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            mock_get_tel.assert_called()
+            self.assertIn("18.5%", data["content"])
+            self.assertIn("45.2%", data["content"])
+            self.assertEqual(len(data["actions"]), 1)
+            self.assertEqual(data["actions"][0]["agent"], "System Agent")
+            self.assertEqual(data["actions"][0]["action"], "telemetry")
+            self.assertEqual(data["actions"][0]["status"], "success")
+
+    # 13. "search in chrome about ai" & "search about ai in browser" execute browser search
+    def test_13_browser_search_queries_execute_real_search(self):
+        with patch.object(browser_agent, "search", new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = {
+                "success": True,
+                "action": "search",
+                "query": "ai",
+                "message": "Searched for 'ai' in browser."
+            }
+            # Test variant 1: "search in chrome about ai"
+            resp1 = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "search in chrome about ai"}]
+            })
+            self.assertEqual(resp1.status_code, 200)
+            data1 = resp1.json()
+            mock_search.assert_called_with("ai")
+            self.assertEqual(data1["actions"][0]["agent"], "Browser Agent")
+            self.assertEqual(data1["actions"][0]["action"], "search")
+            self.assertEqual(data1["actions"][0]["status"], "success")
+
+            # Test variant 2: "search about ai in browser"
+            resp2 = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "search about ai in browser"}]
+            })
+            self.assertEqual(resp2.status_code, 200)
+            data2 = resp2.json()
+            self.assertEqual(data2["actions"][0]["agent"], "Browser Agent")
+            self.assertEqual(data2["actions"][0]["action"], "search")
+
+    # 14. Single-word app launch: "chrome", "notepad"
+    def test_14_single_word_app_launch_executes_launch_app(self):
+        with patch.object(system_agent, "launch_app", return_value={"success": True, "launched": "chrome.exe", "pid": 4321, "message": "Successfully launched chrome.exe"}) as mock_launch:
+            resp = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "chrome"}]
+            })
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            mock_launch.assert_called_with("chrome")
+            self.assertEqual(len(data["actions"]), 1)
+            self.assertTrue(data["actions"][0]["success"])
+
+        with patch.object(system_agent, "launch_app", return_value={"success": True, "launched": "notepad.exe", "pid": 5678, "message": "Successfully launched notepad.exe"}) as mock_launch:
+            resp = self.client.post("/api/chat", json={
+                "messages": [{"role": "user", "content": "notepad"}]
+            })
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            mock_launch.assert_called_with("notepad")
+            self.assertEqual(len(data["actions"]), 1)
+            self.assertTrue(data["actions"][0]["success"])
+
+    def test_15_demonstrative_and_fuzzy_file_opening(self):
+        from agents.file_agent import file_agent
+        sample_docs = [
+            {
+                "id": 1,
+                "filename": "Sweekar_M_Cisco_Software_Engineer_Resume.pdf",
+                "path": r"C:\Users\sweek\OneDrive\Documents\resume\Sweekar_M_Cisco_Software_Engineer_Resume.pdf",
+                "extension": ".pdf",
+                "modified": "2026-10-13 22:24",
+                "size_display": "113.9 KB"
+            },
+            {
+                "id": 2,
+                "filename": "Sweekar_M_Cisco_Software_Engineer_Resume.docx",
+                "path": r"C:\Users\sweek\OneDrive\Documents\resume\Sweekar_M_Cisco_Software_Engineer_Resume.docx",
+                "extension": ".docx",
+                "modified": "2026-10-13 22:23",
+                "size_display": "29.3 KB"
+            }
+        ]
+        file_agent.last_search_results = list(sample_docs)
+
+        # 1. Test "open that pdf"
+        with patch.object(file_agent, "open_file", return_value={
+            "success": True, "opened": True, "file_found": True,
+            "filename": "Sweekar_M_Cisco_Software_Engineer_Resume.pdf",
+            "file_path": sample_docs[0]["path"],
+            "command_dispatched": True, "visibly_opened": False
+        }) as mock_open:
+            resp = self.client.post("/api/chat", json={
+                "messages": [
+                    {"role": "user", "content": "find the last updated file"},
+                    {"role": "assistant", "content": "I found 10 recent documents:\n• 1. Sweekar_M_Cisco_Software_Engineer_Resume.pdf — C:\\Users\\sweek\\OneDrive\\Documents\\resume\\Sweekar_M_Cisco_Software_Engineer_Resume.pdf"},
+                    {"role": "user", "content": "open that pdf"}
+                ]
+            })
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["actions"][0]["status"], "success")
+
+        # 2. Test "open the sweekar cisco pdf"
+        with patch.object(file_agent, "open_file", return_value={
+            "success": True, "opened": True, "file_found": True,
+            "filename": "Sweekar_M_Cisco_Software_Engineer_Resume.pdf",
+            "file_path": sample_docs[0]["path"],
+            "command_dispatched": True, "visibly_opened": False
+        }) as mock_open:
+            resp = self.client.post("/api/chat", json={
+                "messages": [
+                    {"role": "user", "content": "open the sweekar cisco pdf"}
+                ]
+            })
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertEqual(data["actions"][0]["status"], "success")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

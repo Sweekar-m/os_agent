@@ -49,6 +49,11 @@ src-tauri/target/
 src-tauri/gen/schemas/
 target/
 
+# Logs
+*.log
+logs/
+backend/logs/
+
 # Node / Dependencies
 node_modules/
 npm-debug.log*

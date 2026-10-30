@@ -295,7 +295,8 @@ class PermissionEngine:
         reason: Optional[str] = None,
         impact: Optional[str] = None,
         risk_level: Optional[str] = None,
-        timeout_seconds: float = 300.0
+        timeout_seconds: float = 300.0,
+        approval_id: Optional[str] = None
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
         Creates a pending approval request in DB, publishes event,
@@ -305,7 +306,7 @@ class PermissionEngine:
         if self._emergency_stopped:
             return PermissionDecision.CANCEL, {"reason": "Emergency stop is active"}
 
-        approval_id = f"appr-{uuid.uuid4().hex[:12]}"
+        approval_id = approval_id or f"appr-{uuid.uuid4().hex[:12]}"
         
         # If classification not provided, compute it
         if command and not (reason and impact and risk_level):
@@ -431,6 +432,9 @@ class PermissionEngine:
             fut.set_result((decision, meta))
 
         return True
+
+    # Alias for convenience
+    resolve_approval = submit_decision
 
     # ----------------- Rule Management & Revocation -----------------
 

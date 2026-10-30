@@ -85,15 +85,18 @@ class BrowserAgent:
                         except Exception:
                             pass
 
-                    # Detect browser based on process name, class, or title keywords
+                    # Detect browser based on process name or title keywords
                     is_browser = False
                     browser_type = "unknown"
 
                     is_proc_browser = pname in KNOWN_BROWSER_PROCESSES
-                    is_class_browser = cls_name in KNOWN_BROWSER_CLASSES
-                    is_title_browser = any(b in title.lower() for b in [" - google chrome", " - microsoft​ edge", " - brave", " - edge", " - mozilla firefox"])
+                    is_title_browser = any(b in title.lower() for b in [" - google chrome", " - microsoft edge", " - brave", " - edge", " - mozilla firefox", " - opera"])
 
-                    if is_proc_browser or is_class_browser or is_title_browser:
+                    # Exclude non-browser apps that happen to use Chrome_WidgetWin_1 (e.g. Electron, IDEs, desktop shells)
+                    non_browser_procs = ["code.exe", "discord.exe", "slack.exe", "spotify.exe", "teams.exe", "antigravity.exe", "python.exe", "explorer.exe", "devenv.exe"]
+                    if pname in non_browser_procs:
+                        is_browser = False
+                    elif is_proc_browser or is_title_browser:
                         # Exclude self desktop client app windows
                         if title.strip() in ["OS Agent - ChatGPT Desktop", "ChatGPT", "Antigravity IDE"] and "preview" not in title.lower():
                             is_browser = False
@@ -186,11 +189,27 @@ class BrowserAgent:
 
         focused = self.focus_browser(hwnd)
         if not focused:
-            return {
-                "success": False,
-                "error": "No open browser window found. Please open Chrome or Edge first.",
-                "url": url
-            }
+            # If no browser window is currently open, launch default browser with URL
+            try:
+                import os
+                os.startfile(url)
+                await asyncio.sleep(1.5)
+                self.focus_browser()
+                primary = self.get_primary_browser()
+                new_title = primary["title"] if primary else "Web Browser"
+                return {
+                    "success": True,
+                    "action": "navigate",
+                    "url": url,
+                    "current_browser_title": new_title,
+                    "message": f"Opened browser and navigated to {url}"
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"No open browser window found and could not launch browser: {e}",
+                    "url": url
+                }
 
         # Press Ctrl+L or Alt+D to highlight the browser address omnibox
         controller.hotkey("ctrl", "l")

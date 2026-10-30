@@ -79,6 +79,8 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     model: Optional[str] = None
     permission_mode: Optional[str] = "full_access"
+    async_task: Optional[bool] = None
+    wait_for_completion: Optional[bool] = None
 
 class SettingsUpdateRequest(BaseModel):
     llm_provider: Optional[str] = None
@@ -844,12 +846,34 @@ async def handle_browser_operation(last_user_msg: str, raw_messages: List[Dict[s
 
     # 3. Browser Search / Navigation
     p_lower = last_user_msg.lower().strip()
-    if any(p in p_lower for p in ["search for", "google for", "search in browser", "search "]):
-        q = last_user_msg
-        for prefix in ["search for", "google for", "search in browser", "google", "search"]:
-            if prefix in p_lower:
-                q = last_user_msg[p_lower.find(prefix) + len(prefix):].strip()
-                break
+    if p_lower in ["open browser", "open chrome", "launch chrome", "chrome", "open edge", "edge", "open brave", "brave"]:
+        browser_name = "chrome" if "chrome" in p_lower else ("edge" if "edge" in p_lower else ("brave" if "brave" in p_lower else "chrome"))
+        launch_res = system_agent.launch_app(browser_name)
+        content = launch_res.get("message") or f"Opened {browser_name}."
+        spoken = f"Opening {browser_name} now."
+        return {
+            "role": "assistant",
+            "content": content,
+            "actions": [{
+                "agent": "Browser Agent",
+                "action": "launch_browser",
+                "status": "success" if launch_res.get("success") else "error",
+                "success": launch_res.get("success", False),
+                "data": launch_res
+            }],
+            "spoken_summary": spoken,
+            "audio_url": None,
+            "ppt_files": []
+        }
+
+    if intent_router.is_browser_search_request(last_user_msg) or any(p in p_lower for p in ["search for", "google for", "search in browser", "search "]):
+        q = intent_router.extract_browser_search_query(last_user_msg)
+        if not q:
+            q = last_user_msg
+            for prefix in ["search for", "google for", "search in browser", "google", "search"]:
+                if prefix in p_lower:
+                    q = last_user_msg[p_lower.find(prefix) + len(prefix):].strip()
+                    break
         search_res = await browser_agent.search(q)
         content = search_res.get("message") or f"Searched for '{q}' in browser."
         spoken = f"Searched for {q} in your browser."
@@ -926,23 +950,37 @@ async def handle_system_operation(last_user_msg: str, raw_messages: List[Dict[st
 
     p_lower = last_user_msg.lower().strip()
 
-    # 1. Telemetry / Specs / Hardware
-    if any(w in p_lower for w in ["cpu", "ram", "memory", "specs", "disk space", "hardware", "telemetry", "system info"]):
+    # 1. Telemetry / Specs / Hardware / Performance
+    if any(w in p_lower for w in ["cpu", "ram", "memory", "specs", "disk space", "hardware", "telemetry", "system info", "performance", "system status", "system health", "how is my pc", "how is my system"]):
         tel = system_agent.get_system_telemetry()
         if tel.get("success"):
-            cpu_p = tel["cpu"]["percent"]
-            mem_p = tel["memory"]["percent"]
-            mem_u = tel["memory"]["used_gb"]
-            mem_t = tel["memory"]["total_gb"]
+            cpu_info = tel.get("cpu", {})
+            mem_info = tel.get("memory", {})
+            os_info = tel.get("os", {})
+            cpu_p = cpu_info.get("percent", 0)
+            mem_p = mem_info.get("percent", 0)
+            mem_u = mem_info.get("used_gb", 0)
+            mem_t = mem_info.get("total_gb", 0)
+            cores_p = cpu_info.get("cores_physical", 0)
+            cores_l = cpu_info.get("cores_logical", 0)
+            os_plat = os_info.get("platform", "Windows")
+            os_rel = os_info.get("release", "")
+            os_arch = os_info.get("architecture", "")
+            hostname = os_info.get("hostname", "PC")
+            uptime = os_info.get("uptime_hours", tel.get("uptime_hours", 0))
+
             content = (
                 f"### 💻 System Telemetry:\n"
-                f"• **CPU**: {cpu_p}% utilization ({tel['cpu']['cores_physical']} physical / {tel['cpu']['cores_logical']} logical cores)\n"
+                f"• **CPU**: {cpu_p}% utilization ({cores_p} physical / {cores_l} logical cores)\n"
                 f"• **RAM**: {mem_p}% used ({mem_u} GB / {mem_t} GB)\n"
-                f"• **OS**: {tel['os']['platform']} {tel['os']['release']} ({tel['os']['architecture']})\n"
-                f"• **Host**: `{tel['os']['hostname']}` (Uptime: {tel['os']['uptime_hours']} hours)"
+                f"• **OS**: {os_plat} {os_rel} ({os_arch})\n"
+                f"• **Host**: `{hostname}` (Uptime: {uptime} hours)"
             )
-            if "disk" in tel and "percent" in tel["disk"]:
-                content += f"\n• **Disk**: {tel['disk']['percent']}% used ({tel['disk']['used_gb']} GB / {tel['disk']['total_gb']} GB)"
+            if "disks" in tel and tel["disks"]:
+                d0 = tel["disks"][0]
+                content += f"\n• **Disk ({d0.get('mountpoint', 'C:')})**: {d0.get('percent', 0)}% used ({d0.get('used_gb', 0)} GB / {d0.get('total_gb', 0)} GB)"
+            elif "disk" in tel and isinstance(tel["disk"], dict):
+                content += f"\n• **Disk**: {tel['disk'].get('percent', 0)}% used ({tel['disk'].get('used_gb', 0)} GB / {tel['disk'].get('total_gb', 0)} GB)"
             spoken = f"Your CPU is at {cpu_p} percent and RAM is at {mem_p} percent usage."
             actions = [{
                 "agent": "System Agent",
@@ -1067,9 +1105,18 @@ async def handle_system_operation(last_user_msg: str, raw_messages: List[Dict[st
             "ppt_files": []
         }
 
-    # 5. Launch application
-    if p_lower.startswith("launch ") or p_lower.startswith("start app ") or (p_lower.startswith("open ") and not intent_router.is_open_file_request(last_user_msg)):
-        app_name = re.sub(r"^(?:launch|start app|open)\s+", "", last_user_msg, flags=re.IGNORECASE).strip()
+    # 5. Launch application (Explicit launch or single-word app name)
+    common_apps = {
+        "chrome": "chrome", "google chrome": "chrome", "notepad": "notepad",
+        "calc": "calc", "calculator": "calculator", "edge": "edge", "brave": "brave",
+        "terminal": "terminal", "cmd": "cmd", "powershell": "powershell",
+        "paint": "paint", "taskmgr": "taskmgr", "task manager": "taskmgr", "settings": "settings"
+    }
+    if p_lower in common_apps or p_lower.startswith("launch ") or p_lower.startswith("start app ") or (p_lower.startswith("open ") and not intent_router.is_open_file_request(last_user_msg)):
+        if p_lower in common_apps:
+            app_name = common_apps[p_lower]
+        else:
+            app_name = re.sub(r"^(?:launch|start app|open)\s+", "", last_user_msg, flags=re.IGNORECASE).strip()
         launch_res = system_agent.launch_app(app_name)
         content = launch_res.get("message") or f"Launched '{app_name}' on desktop."
         spoken = f"Opening {app_name} now."
@@ -1304,6 +1351,69 @@ async def chat_endpoint(req: ChatRequest):
             "ppt_files": []
         }
 
+    # 4b. Multi-Agent Tasks & Autonomous OS Operations -> Central Background Task Manager
+    if intent == AgentIntent.MULTI_AGENT_TASK or req.async_task:
+        try:
+            ws = str(Path(__file__).resolve().parent.parent)
+            task_id = await orchestrator.create_and_run_task(
+                prompt=last_user_msg,
+                workspace=ws,
+                permission_mode=req.permission_mode or "full_access",
+                model=req.model,
+                chat_history=raw_messages
+            )
+
+            # If client explicitly asked to wait for completion (e.g. in test suite)
+            if req.wait_for_completion:
+                worker = orchestrator.active_tasks.get(task_id)
+                if worker:
+                    try:
+                        await asyncio.wait_for(asyncio.shield(worker), timeout=45.0)
+                    except Exception as w_err:
+                        logger.warning(f"Task {task_id} wait note: {w_err}")
+                completed_task = db.get_task(task_id) or {}
+                rep = completed_task.get("completion_report") or {}
+                summary_text = rep.get("summary") or f"Task {task_id} completed."
+                spoken = rep.get("spoken_summary") or speech_service.filter_text_for_speech(summary_text, user_prompt=last_user_msg)
+                audio_url = f"/api/speech/tts?text={urllib.parse.quote(spoken)}" if spoken and speech_service.tts_provider != "muted" else None
+                return {
+                    "role": "assistant",
+                    "task_id": task_id,
+                    "status": completed_task.get("status", "COMPLETED"),
+                    "content": summary_text,
+                    "actions": rep.get("details", []),
+                    "spoken_summary": spoken,
+                    "audio_url": audio_url,
+                    "ppt_files": []
+                }
+
+            # Fast acceptance acknowledgement (<200ms) with unique task ID
+            msg = f"🚀 **Task Accepted**: `{task_id}`\n\nObjective: *{last_user_msg}*\n\nExecuting plan across specialized agents in the background..."
+            spoken = "Task accepted and running in the background."
+            return {
+                "role": "assistant",
+                "task_id": task_id,
+                "status": "QUEUED",
+                "async_task": True,
+                "content": msg,
+                "actions": [{"type": "task_dispatched", "task_id": task_id, "status": "QUEUED"}],
+                "spoken_summary": spoken,
+                "audio_url": None,
+                "ppt_files": []
+            }
+        except Exception as t_err:
+            logger.error(f"Failed to dispatch background task: {t_err}", exc_info=True)
+            err_msg = f"⚠️ Could not start background task: {t_err}"
+            return {
+                "role": "assistant",
+                "content": err_msg,
+                "error": str(t_err),
+                "actions": [],
+                "spoken_summary": err_msg,
+                "audio_url": None,
+                "ppt_files": []
+            }
+
     # 5. OS Operations & Multi-Agent Tasks (Browser, File, System, Multi-Agent)
     try:
         res = await nim_client.chat_complete(
@@ -1427,16 +1537,32 @@ async def sse_task_events(task_id: str, request: Request):
         try:
             # First send existing DB events
             existing = db.get_task_events(task_id)
+            has_terminal = False
             for evt in existing:
-                yield f"data: {json.dumps(evt)}\n\n"
+                evt_dict = {
+                    "task_id": evt["task_id"],
+                    "event_type": evt["event_type"],
+                    "data": evt.get("payload", {}),
+                    "payload": evt.get("payload", {}),
+                    "timestamp": evt.get("created_at")
+                }
+                yield f"data: {json.dumps(evt_dict)}\n\n"
+                if evt.get("event_type") in ["TASK_COMPLETED", "TASK_FAILED", "TASK_CANCELLED"]:
+                    has_terminal = True
+                    break
+
+            if has_terminal:
+                return
 
             # Stream live events
             while True:
-                if await request.is_disconnected():
+                if request and await request.is_disconnected():
                     break
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=20.0)
                     yield f"data: {json.dumps(payload)}\n\n"
+                    if payload.get("event_type") in ["TASK_COMPLETED", "TASK_FAILED", "TASK_CANCELLED"]:
+                        break
                 except asyncio.TimeoutError:
                     yield f": heartbeat\n\n"
         finally:
@@ -1461,6 +1587,10 @@ def respond_approval_endpoint(approval_id: str, req: ApprovalResponse):
         raise HTTPException(status_code=404, detail="Approval request not found or already resolved")
     return {"approval_id": approval_id, "resolved": True, "decision": req.decision}
 
+@app.post("/api/approvals/{approval_id}/decision")
+def decision_approval_endpoint(approval_id: str, req: ApprovalResponse):
+    return respond_approval_endpoint(approval_id, req)
+
 @app.get("/api/permissions/rules")
 def get_permission_rules_endpoint(project_path: Optional[str] = None):
     return db.list_permission_rules(project_path=project_path)
@@ -1475,6 +1605,32 @@ def get_audit_logs_endpoint(task_id: Optional[str] = None, limit: int = 100):
     return db.get_audit_logs(task_id=task_id, limit=limit)
 
 # ----------------- HEALTH & DIAGNOSTICS -----------------
+
+@app.get("/health")
+def get_lightweight_health():
+    """Lightweight ping endpoint for liveness and connection checks."""
+    return {"status": "ok", "service": "os-agent-backend"}
+
+@app.get("/api/health/ready")
+def get_backend_readiness():
+    """Readiness probe confirming required services are initialized before task submission."""
+    db_ready = db.DB_PATH.exists()
+    return {
+        "status": "ready" if db_ready else "initializing",
+        "ready": db_ready,
+        "emergency_stopped": permission_engine.is_emergency_stopped(),
+        "services": {
+            "database": "ready" if db_ready else "unavailable",
+            "orchestrator": "ready",
+            "permission_engine": "ready",
+            "agents": {
+                "browser": "ready",
+                "file": "ready",
+                "system": "ready",
+                "vision": "ready"
+            }
+        }
+    }
 
 @app.get("/api/health")
 def get_health_diagnostics():

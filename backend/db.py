@@ -142,7 +142,9 @@ def update_task_status(task_id: str, status: str, error_message: Optional[str] =
     finally:
         conn.close()
 
-def save_task_plan(task_id: str, plan_dict: Dict[str, Any]):
+def save_task_plan(task_id: str, plan_dict: Any):
+    if hasattr(plan_dict, "to_dict"):
+        plan_dict = plan_dict.to_dict()
     conn = get_db_connection()
     now = utc_now_iso()
     try:
@@ -150,7 +152,7 @@ def save_task_plan(task_id: str, plan_dict: Dict[str, Any]):
             conn.execute("""
             UPDATE tasks SET plan_json = ?, updated_at = ? WHERE id = ?
             """, (json.dumps(plan_dict), now, task_id))
-        log_audit(task_id, "PLAN_SAVED", {"steps_count": len(plan_dict.get("implementation_steps", []))})
+        log_audit(task_id, "PLAN_SAVED", {"steps_count": len(plan_dict.get("implementation_steps", plan_dict.get("steps", [])))})
     finally:
         conn.close()
 
@@ -178,15 +180,16 @@ def save_task_review(task_id: str, review_dict: Dict[str, Any]):
     finally:
         conn.close()
 
-def save_completion_report(task_id: str, report_dict: Dict[str, Any]):
+def save_completion_report(task_id: str, report_dict: Dict[str, Any], status: Optional[str] = None):
     conn = get_db_connection()
     now = utc_now_iso()
+    final_status = status or report_dict.get("final_status") or "COMPLETED"
     try:
         with conn:
             conn.execute("""
-            UPDATE tasks SET completion_report_json = ?, status = 'COMPLETED', updated_at = ? WHERE id = ?
-            """, (json.dumps(report_dict), now, task_id))
-        log_audit(task_id, "TASK_COMPLETED", {"status": "COMPLETED"})
+            UPDATE tasks SET completion_report_json = ?, status = ?, updated_at = ? WHERE id = ?
+            """, (json.dumps(report_dict), final_status, now, task_id))
+        log_audit(task_id, "TASK_COMPLETED" if final_status == "COMPLETED" else "TASK_FAILED", {"status": final_status})
     finally:
         conn.close()
 
@@ -205,6 +208,13 @@ def get_task(task_id: str) -> Optional[Dict[str, Any]]:
                     d[k.replace("_json", "")] = None
             else:
                 d[k.replace("_json", "")] = None
+        # Result convenience alias
+        if d.get("completion_report") and isinstance(d["completion_report"], dict):
+            d["result"] = d["completion_report"].get("summary", "")
+        elif d.get("error_message"):
+            d["result"] = d.get("error_message")
+        else:
+            d["result"] = ""
         return d
     finally:
         conn.close()

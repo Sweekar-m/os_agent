@@ -1,5 +1,7 @@
-// Backend API Base URL
-const API_BASE = 'http://localhost:8000';
+// Dynamic Backend API Base URL
+const API_BASE = (window.location && window.location.protocol && window.location.protocol.startsWith('http'))
+  ? window.location.origin
+  : 'http://127.0.0.1:8000';
 
 let currentModel = 'nvidia/nemotron-3.5-lightning-30b-a3b';
 let chatHistory = [];
@@ -87,15 +89,27 @@ const pipCloseBtn = document.getElementById('pip-close-btn');
 const btnQuickScreenshot = document.getElementById('btn-quick-screenshot');
 const btnQuickWin = document.getElementById('btn-quick-win');
 
+// Backend Status Banner
+const bannerEl = document.getElementById('backend-status-banner');
+const bannerIcon = document.getElementById('banner-icon');
+const bannerText = document.getElementById('banner-text');
+const bannerRetryBtn = document.getElementById('banner-retry-btn');
+let backendState = 'startup';
+let reconnectAttempts = 0;
+let healthPollTimer = null;
+let activeEventSources = {};
+
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
   initEventListeners();
-  checkBackendStatus();
+  updateBackendState('startup', 'Connecting to OS Agent backend...');
+  startHealthMonitor();
   initAgentStatusPolling();
   initEmergencyStop();
   initSpeech();
   loadSettings();
   initRemotePolling();
+  recoverActiveTask();
 });
 
 function initEventListeners() {
@@ -210,29 +224,99 @@ function initEventListeners() {
       body: JSON.stringify({ action: 'press', params: { key: 'win' } })
     });
   });
+
+  if (bannerRetryBtn) {
+    bannerRetryBtn.addEventListener('click', () => {
+      updateBackendState('recovering', 'Checking backend connection...');
+      checkBackendStatus();
+    });
+  }
 }
 
 // --- Status, Agents & Emergency Stop ---
+function updateBackendState(state, message = '') {
+  backendState = state;
+  if (!bannerEl) return;
+
+  if (state === 'ready') {
+    reconnectAttempts = 0;
+    bannerEl.className = 'backend-banner ready';
+    if (bannerIcon) bannerIcon.textContent = '✅';
+    if (bannerText) bannerText.textContent = 'Backend Online & Ready';
+    if (bannerRetryBtn) bannerRetryBtn.style.display = 'none';
+    if (sendBtn) sendBtn.disabled = !promptTextarea.value.trim() || isGenerating;
+    setTimeout(() => {
+      if (backendState === 'ready') {
+        bannerEl.style.display = 'none';
+      }
+    }, 2000);
+  } else if (state === 'startup') {
+    bannerEl.style.display = 'flex';
+    bannerEl.className = 'backend-banner';
+    if (bannerIcon) bannerIcon.textContent = '🔄';
+    if (bannerText) bannerText.textContent = message || 'Starting OS Agent backend services...';
+    if (bannerRetryBtn) bannerRetryBtn.style.display = 'none';
+  } else if (state === 'disconnected') {
+    bannerEl.style.display = 'flex';
+    bannerEl.className = 'backend-banner error';
+    if (bannerIcon) bannerIcon.textContent = '⚠️';
+    if (bannerText) bannerText.textContent = message || 'Backend disconnected. Reconnecting...';
+    if (bannerRetryBtn) bannerRetryBtn.style.display = 'inline-flex';
+  } else if (state === 'recovering') {
+    bannerEl.style.display = 'flex';
+    bannerEl.className = 'backend-banner';
+    if (bannerIcon) bannerIcon.textContent = '🔄';
+    if (bannerText) bannerText.textContent = message || 'Attempting automatic recovery...';
+    if (bannerRetryBtn) bannerRetryBtn.style.display = 'none';
+  }
+}
+
 async function checkBackendStatus() {
   try {
-    const res = await fetch(`${API_BASE}/api/status`);
+    const res = await fetch(`${API_BASE}/api/health/ready`, { cache: 'no-store' });
     if (res.ok) {
-      const data = await res.json();
-      if (data.emergency_stopped) {
-        setEmergencyStopUI(true);
-      }
-      if (data.has_api_key) {
-        footerApiStatus.textContent = `${(data.provider || 'LLM').toUpperCase()} Active`;
-        footerApiStatus.style.color = 'var(--accent)';
+      const readyData = await res.json();
+      if (readyData.ready) {
+        updateBackendState('ready');
       } else {
-        footerApiStatus.textContent = 'API Key Required';
-        footerApiStatus.style.color = 'var(--warning)';
+        updateBackendState('startup', 'Initializing database and agents...');
       }
+
+      const statusRes = await fetch(`${API_BASE}/api/status`);
+      if (statusRes.ok) {
+        const data = await statusRes.json();
+        if (data.emergency_stopped) {
+          setEmergencyStopUI(true);
+        }
+        if (data.has_api_key) {
+          footerApiStatus.textContent = `${(data.provider || 'LLM').toUpperCase()} Active`;
+          footerApiStatus.style.color = 'var(--accent)';
+        } else {
+          footerApiStatus.textContent = 'API Key Required';
+          footerApiStatus.style.color = 'var(--warning)';
+        }
+      }
+      return true;
+    } else {
+      throw new Error(`HTTP ${res.status}`);
     }
   } catch (err) {
+    reconnectAttempts++;
+    const delaySec = Math.min(10, Math.pow(1.5, reconnectAttempts));
+    updateBackendState('disconnected', `Network connection lost (${err.message}). Retrying in ${Math.round(delaySec)}s...`);
     footerApiStatus.textContent = 'Backend Offline';
     footerApiStatus.style.color = 'var(--danger)';
+    return false;
   }
+}
+
+function startHealthMonitor() {
+  const poll = async () => {
+    const ok = await checkBackendStatus();
+    const delay = ok ? 4000 : Math.min(10000, 1000 * Math.pow(1.5, reconnectAttempts));
+    healthPollTimer = setTimeout(poll, delay);
+  };
+  poll();
 }
 
 function initAgentStatusPolling() {
@@ -620,6 +704,331 @@ function refreshPipFrame() {
     .catch(() => {});
 }
 
+// --- Background Task Progress & Real-Time SSE (Redesigned) ---
+
+function copyTextToClipboard(text, btnEl, successLabel = 'Copied!') {
+  const showFeedback = () => {
+    if (btnEl) {
+      const origHtml = btnEl.innerHTML;
+      btnEl.innerHTML = `<span>✓</span> ${escapeHtml(successLabel)}`;
+      btnEl.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+      btnEl.style.color = '#34d399';
+      setTimeout(() => {
+        btnEl.innerHTML = origHtml;
+        btnEl.style.borderColor = '';
+        btnEl.style.color = '';
+      }, 1800);
+    }
+  };
+
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(showFeedback).catch(() => {
+      fallbackCopyText(text, showFeedback);
+    });
+  } else {
+    fallbackCopyText(text, showFeedback);
+  }
+}
+
+function fallbackCopyText(text, cb) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand('copy');
+    if (cb) cb();
+  } catch (e) {
+    console.warn('Fallback copy failed:', e);
+  }
+  document.body.removeChild(ta);
+}
+
+function renderTaskCard(container, taskId, promptText, initialStatus = 'QUEUED', taskData = null) {
+  container.innerHTML = '';
+  const card = document.createElement('div');
+  const normStatus = (initialStatus || 'QUEUED').toUpperCase();
+  const isFinished = ['COMPLETED', 'FAILED', 'CANCELLED'].includes(normStatus);
+  card.className = `executing-card ${isFinished ? 'completed' : ''}`;
+  card.id = `task-card-${taskId}`;
+
+  let reportHtml = '';
+  if (taskData && taskData.completion_report && taskData.completion_report.summary) {
+    reportHtml = formatMarkdown(taskData.completion_report.summary);
+  } else if (normStatus === 'FAILED' && taskData && taskData.error) {
+    reportHtml = `<span style="color:#f87171;">${escapeHtml(taskData.error)}</span>`;
+  }
+
+  card.innerHTML = `
+    <div class="executing-header" id="task-header-${taskId}" style="${isFinished ? 'display:none;' : ''}">
+      <div class="executing-main-row">
+        <div class="executing-spinner" id="task-spinner-${taskId}"></div>
+        <span class="executing-status-text" id="task-status-text-${taskId}">Executing...</span>
+      </div>
+      <button class="btn-cancel-simple" id="btn-cancel-task-${taskId}">Cancel</button>
+    </div>
+    <div class="executing-step-text" id="task-step-text-${taskId}" style="${isFinished ? 'display:none;' : ''}">
+      ${escapeHtml(promptText || '')}
+    </div>
+    <div id="approval-slot-${taskId}"></div>
+    <div id="task-result-${taskId}" class="task-result-simple" style="${isFinished ? 'display:block;' : 'display:none;'}">
+      <div id="outcome-content-${taskId}">${reportHtml}</div>
+    </div>
+  `;
+
+  container.appendChild(card);
+
+  // Cancel Button Event
+  const cancelBtn = card.querySelector(`#btn-cancel-task-${taskId}`);
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', async () => {
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = 'Cancelling...';
+      try {
+        await fetch(`${API_BASE}/api/tasks/${taskId}/cancel`, { method: 'POST' });
+      } catch (e) {
+        console.warn('Cancel request error:', e);
+      }
+    });
+  }
+
+  return card;
+}
+
+function subscribeToTaskEvents(taskId, container, promptText) {
+  if (activeEventSources[taskId]) {
+    activeEventSources[taskId].close();
+  }
+
+  localStorage.setItem('os_agent_active_task_id', taskId);
+
+  const card = document.getElementById(`task-card-${taskId}`);
+  const header = document.getElementById(`task-header-${taskId}`);
+  const spinner = document.getElementById(`task-spinner-${taskId}`);
+  const statusText = document.getElementById(`task-status-text-${taskId}`);
+  const stepText = document.getElementById(`task-step-text-${taskId}`);
+  const cancelBtn = document.getElementById(`btn-cancel-task-${taskId}`);
+  const approvalSlot = document.getElementById(`approval-slot-${taskId}`);
+  const resultDiv = document.getElementById(`task-result-${taskId}`);
+  const outcomeContent = document.getElementById(`outcome-content-${taskId}`);
+
+  const removeApprovalBanner = () => {
+    if (approvalSlot) approvalSlot.innerHTML = '';
+  };
+
+  const renderApprovalBanner = (apprData) => {
+    removeApprovalBanner();
+    if (!approvalSlot) return;
+
+    const box = document.createElement('div');
+    box.className = 'approval-simple-box';
+    box.id = `approval-box-${taskId}`;
+
+    box.innerHTML = `
+      <div class="approval-simple-title">⚠️ Action Requires Authorization</div>
+      <div class="approval-simple-desc">
+        <b>Action:</b> ${escapeHtml(apprData.step || apprData.action || 'OS Operation')}<br>
+        <span style="opacity:0.85;">${escapeHtml(apprData.reason || 'This operation requires authorization under security policy.')}</span>
+      </div>
+      <div class="approval-simple-actions">
+        <button class="btn-appr-allow" id="btn-appr-allow-${taskId}">Allow</button>
+        <button class="btn-appr-deny" id="btn-appr-deny-${taskId}">Deny</button>
+      </div>
+    `;
+
+    approvalSlot.appendChild(box);
+
+    const sendDecision = async (decision) => {
+      const apprId = apprData.approval_id || apprData.id;
+      if (!apprId) return;
+      try {
+        const btns = box.querySelectorAll('button');
+        btns.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+        await fetch(`${API_BASE}/api/approvals/${apprId}/respond`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision })
+        });
+        removeApprovalBanner();
+        if (statusText) statusText.textContent = 'Executing...';
+      } catch (err) {
+        console.warn('Failed to respond to approval:', err);
+      }
+    };
+
+    box.querySelector(`#btn-appr-allow-${taskId}`)?.addEventListener('click', () => sendDecision('allow_once'));
+    box.querySelector(`#btn-appr-deny-${taskId}`)?.addEventListener('click', () => sendDecision('deny'));
+  };
+
+  const evtSource = new EventSource(`${API_BASE}/api/tasks/${taskId}/events`);
+  activeEventSources[taskId] = evtSource;
+
+  evtSource.onmessage = (e) => {
+    try {
+      const payload = JSON.parse(e.data);
+      const evtType = payload.event_type;
+      const data = payload.data || payload.payload || {};
+
+      if (evtType === 'PHASE_CHANGED') {
+        const phase = (data.phase || 'EXECUTING').toUpperCase();
+        if (statusText) {
+          statusText.textContent = phase === 'PLANNING' ? 'Planning...' : 'Executing...';
+        }
+      } else if (evtType === 'APPROVAL_REQUIRED') {
+        if (statusText) statusText.textContent = 'Action Requires Authorization';
+        renderApprovalBanner(data);
+      } else if (evtType === 'PLAN_GENERATED') {
+        if (statusText) statusText.textContent = 'Executing...';
+        const steps = data.steps || [];
+        if (steps.length > 0 && stepText) {
+          stepText.textContent = steps[0].title || steps[0].action || promptText;
+        }
+      } else if (evtType === 'ACTION_EXECUTING') {
+        removeApprovalBanner();
+        if (statusText) statusText.textContent = 'Executing...';
+        if (stepText) {
+          const act = data.action || data.step_title || (data.step_index !== undefined ? `Executing step ${data.step_index + 1}...` : 'Executing action...');
+          stepText.textContent = act;
+        }
+      } else if (evtType === 'ACTION_COMPLETED') {
+        if (stepText && (data.summary || data.error)) {
+          stepText.textContent = data.summary || data.error;
+        }
+      } else if (evtType === 'TASK_COMPLETED') {
+        removeApprovalBanner();
+        if (header) header.style.display = 'none';
+        if (stepText) stepText.style.display = 'none';
+        if (card) card.classList.add('completed');
+        if (resultDiv) {
+          resultDiv.style.display = 'block';
+          if (outcomeContent) {
+            outcomeContent.innerHTML = formatMarkdown(data.summary || 'Task completed successfully.');
+          }
+        }
+        localStorage.removeItem('os_agent_active_task_id');
+        evtSource.close();
+        delete activeEventSources[taskId];
+
+        const sp = data.spoken_summary || data.summary;
+        if (sp) speakText(sp);
+      } else if (evtType === 'TASK_FAILED') {
+        removeApprovalBanner();
+        if (spinner) spinner.style.display = 'none';
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        if (statusText) statusText.textContent = '❌ Execution Failed';
+        if (stepText) stepText.textContent = data.error || 'Execution encountered an error.';
+        if (resultDiv) {
+          resultDiv.style.display = 'block';
+          if (outcomeContent) {
+            outcomeContent.innerHTML = `<span style="color:#f87171;">${escapeHtml(data.error || 'Execution failed.')}</span>`;
+          }
+        }
+        localStorage.removeItem('os_agent_active_task_id');
+        evtSource.close();
+        delete activeEventSources[taskId];
+      } else if (evtType === 'TASK_CANCELLED') {
+        removeApprovalBanner();
+        if (spinner) spinner.style.display = 'none';
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        if (statusText) statusText.textContent = '🛑 Cancelled';
+        if (stepText) stepText.textContent = data.reason || 'Task was cancelled.';
+        localStorage.removeItem('os_agent_active_task_id');
+        evtSource.close();
+        delete activeEventSources[taskId];
+      }
+    } catch (err) {
+      console.warn('Task SSE parsing note:', err);
+    }
+  };
+
+  evtSource.onerror = async () => {
+    evtSource.close();
+    delete activeEventSources[taskId];
+    try {
+      const res = await fetch(`${API_BASE}/api/tasks/${taskId}`);
+      if (res.ok) {
+        const taskInfo = await res.json();
+        const st = taskInfo.status;
+        if (st === 'COMPLETED' || st === 'FAILED' || st === 'CANCELLED') {
+          localStorage.removeItem('os_agent_active_task_id');
+          if (header) header.style.display = 'none';
+          if (stepText) stepText.style.display = 'none';
+          if (card) card.classList.add('completed');
+          if (resultDiv) {
+            resultDiv.style.display = 'block';
+            if (outcomeContent) {
+              outcomeContent.innerHTML = formatMarkdown((taskInfo.completion_report && taskInfo.completion_report.summary) || `Task status: ${st}`);
+            }
+          }
+          return;
+        }
+      }
+    } catch (e) {}
+
+    setTimeout(() => {
+      if (localStorage.getItem('os_agent_active_task_id') === taskId) {
+        subscribeToTaskEvents(taskId, container, promptText);
+      }
+    }, 3000);
+  };
+}
+
+async function recoverActiveTask() {
+  const savedTaskId = localStorage.getItem('os_agent_active_task_id');
+  if (!savedTaskId) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/tasks/${savedTaskId}`);
+    if (res.ok) {
+      const task = await res.json();
+      emptyState.style.display = 'none';
+      const bubble = appendMessage('assistant', '');
+      renderTaskCard(bubble, savedTaskId, task.user_prompt, task.status, task);
+
+      if (['QUEUED', 'PLANNING', 'EXECUTING', 'AWAITING_APPROVAL'].includes(task.status)) {
+        subscribeToTaskEvents(savedTaskId, bubble, task.user_prompt);
+
+        // Check if there's an active pending approval for this task
+        if (task.status === 'AWAITING_APPROVAL') {
+          try {
+            const apprRes = await fetch(`${API_BASE}/api/approvals/pending?task_id=${savedTaskId}`);
+            if (apprRes.ok) {
+              const apprs = await apprRes.json();
+              if (Array.isArray(apprs) && apprs.length > 0) {
+                const a = apprs[0];
+                const bannerData = {
+                  approval_id: a.id,
+                  step: a.action_type,
+                  agent: 'Specialized Agent',
+                  action: a.command || a.action_type,
+                  reason: a.reason,
+                  risk_level: a.risk_level
+                };
+                setTimeout(() => {
+                  const card = document.getElementById(`task-card-${savedTaskId}`);
+                  if (card) {
+                    const badge = document.getElementById(`task-badge-${savedTaskId}`);
+                    if (badge) badge.className = 'task-badge awaiting_approval';
+                  }
+                }, 100);
+              }
+            }
+          } catch (e) {}
+        }
+      } else {
+        localStorage.removeItem('os_agent_active_task_id');
+      }
+    } else {
+      localStorage.removeItem('os_agent_active_task_id');
+    }
+  } catch (err) {
+    console.warn('Active task recovery note:', err);
+  }
+}
+
 // --- Chat & LLM Interaction ---
 function applySuggestion(text) {
   promptTextarea.value = text;
@@ -640,13 +1049,9 @@ async function handleSendMessage() {
   const text = promptTextarea.value.trim();
   if (!text || isGenerating) return;
 
-  // Interrupt any ongoing speech immediately when user submits new input
   stopDesktopSpeech();
-
-  // Hide empty state
   emptyState.style.display = 'none';
 
-  // Append user message
   appendMessage('user', text);
   chatHistory.push({ role: 'user', content: text });
 
@@ -655,9 +1060,13 @@ async function handleSendMessage() {
   sendBtn.disabled = true;
   isGenerating = true;
 
-  // Append assistant message container with thinking indicator
-  const assistantBubble = appendMessage('assistant', 'Thinking...');
-  assistantBubble.classList.add('thinking');
+  const assistantBubble = appendMessage('assistant', '');
+  assistantBubble.innerHTML = `
+    <div class="simple-loading-row">
+      <div class="simple-spinner"></div>
+      <span class="simple-loading-label">Executing...</span>
+    </div>
+  `;
 
   try {
     const res = await fetch(`${API_BASE}/api/chat`, {
@@ -673,6 +1082,14 @@ async function handleSendMessage() {
     const data = await res.json();
     assistantBubble.classList.remove('thinking');
 
+    // 1. If backend accepted this as a background task
+    if (data.async_task && data.task_id) {
+      renderTaskCard(assistantBubble, data.task_id, text, data.status || 'QUEUED');
+      subscribeToTaskEvents(data.task_id, assistantBubble, text);
+      chatHistory.push({ role: 'assistant', content: `[Task ${data.task_id} running in background]` });
+      return;
+    }
+
     const errDetail = data.error || data.detail || (!res.ok ? `HTTP ${res.status}: ${res.statusText || 'Server Error'}` : null);
     if (errDetail) {
       assistantBubble.textContent = `❌ Error: ${errDetail}`;
@@ -684,7 +1101,6 @@ async function handleSendMessage() {
       }
       assistantBubble.innerHTML = formatMarkdown(content);
 
-      // Render interactive PPT cards if recent presentations are returned
       if (data.ppt_files && data.ppt_files.length > 0) {
         const pptContainer = document.createElement('div');
         pptContainer.className = 'ppt-cards-container';
@@ -714,8 +1130,6 @@ async function handleSendMessage() {
         assistantBubble.appendChild(pptContainer);
       }
 
-
-      // Display rich OS action cards and widgets if any were executed
       if (data.actions && data.actions.length > 0) {
         const actionContainer = document.createElement('div');
         actionContainer.style.marginTop = '8px';
@@ -725,7 +1139,6 @@ async function handleSendMessage() {
 
       chatHistory.push({ role: 'assistant', content: content });
 
-      // Speak assistant response summary with neural audio if TTS is enabled
       const textToSpeak = data.spoken_summary || content;
       if (textToSpeak) {
         speakText(textToSpeak, data.audio_url);
@@ -733,7 +1146,8 @@ async function handleSendMessage() {
     }
   } catch (err) {
     assistantBubble.classList.remove('thinking');
-    assistantBubble.textContent = `❌ Network Error: Could not connect to OS Agent backend (${err.message}). Is the FastAPI server running?`;
+    assistantBubble.textContent = `❌ Network Error: Could not connect to OS Agent backend at ${API_BASE} (${err.message}). Is the FastAPI server running?`;
+    updateBackendState('disconnected', `Network connection lost: ${err.message}`);
   } finally {
     isGenerating = false;
     promptTextarea.focus();

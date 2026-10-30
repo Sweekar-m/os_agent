@@ -1342,6 +1342,189 @@ input[type="range"] {
 .tts-btn.muted {
   opacity: 0.35;
 }
+
+/* Backend Status Banner */
+.backend-banner {
+  padding: 8px 16px;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+  transition: all 0.2s ease;
+  z-index: 30;
+}
+.backend-banner.error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+.backend-banner.ready {
+  background: rgba(16, 163, 127, 0.12);
+  color: #6ee7b7;
+  border-color: rgba(16, 163, 127, 0.25);
+}
+
+/* ============================================================
+   Task Execution & Loading (Clean & Minimal)
+   ============================================================ */
+
+/* Simple Loading Row for chat bubble */
+.simple-loading-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.simple-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #10a37f;
+  border-radius: 50%;
+  animation: simpleSpinAnim 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes simpleSpinAnim {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Executing Card */
+.executing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  margin: 4px 0;
+  max-width: 640px;
+}
+
+.executing-card.completed {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.executing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.executing-main-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.executing-spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #10a37f;
+  border-radius: 50%;
+  animation: simpleSpinAnim 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.executing-status-text {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #e2e8f0;
+}
+
+.executing-step-text {
+  font-size: 12.5px;
+  color: #94a3b8;
+  margin-left: 23px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.btn-cancel-simple {
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-cancel-simple:hover {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Approval Box */
+.approval-simple-box {
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: rgba(245, 158, 11, 0.06);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.approval-simple-title {
+  color: #fbbf24;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.approval-simple-desc {
+  color: #cbd5e1;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.approval-simple-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-appr-allow {
+  background: #10a37f;
+  color: #ffffff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn-appr-deny {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Final Result Output */
+.task-result-simple {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-main);
+  margin-top: 4px;
+}
+
   </style>
 </head>
 <body class="dark-theme">
@@ -1508,6 +1691,15 @@ input[type="range"] {
           </button>
         </div>
       </header>
+
+      <!-- Backend Connection & Lifecycle Status Banner -->
+      <div id="backend-status-banner" class="backend-banner" style="display:none;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="banner-icon" id="banner-icon">🔄</span>
+          <span class="banner-text" id="banner-text">Connecting to OS Agent backend...</span>
+        </div>
+        <button id="banner-retry-btn" class="btn btn-sm btn-outline" style="display:none;">Retry Connection</button>
+      </div>
 
       <!-- Chat Stream Body -->
       <div class="chat-viewport" id="chat-viewport">

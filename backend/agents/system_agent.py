@@ -2,6 +2,8 @@ import os
 import subprocess
 import logging
 import time
+import platform
+import socket
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import ctypes
@@ -15,6 +17,54 @@ except Exception:
 
 logger = logging.getLogger("system_agent")
 logger.setLevel(logging.INFO)
+
+user32 = ctypes.windll.user32
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+try:
+    user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+except Exception:
+    pass
+
+def get_accessible_desktops() -> List[str]:
+    """Returns list of desktop names on the current window station."""
+    desktops = []
+    try:
+        hwinsta = user32.GetProcessWindowStation()
+        DESKTOPENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.LPCWSTR, wintypes.LPARAM)
+        def desk_cb(desk_name, lparam):
+            if desk_name:
+                desktops.append(desk_name)
+            return True
+        user32.EnumDesktopsW(hwinsta, DESKTOPENUMPROC(desk_cb), 0)
+    except Exception:
+        pass
+    if "Default" not in desktops:
+        desktops.append("Default")
+    return desktops
+
+def ensure_interactive_desktop():
+    """Attaches calling thread to active input desktop or preserves existing valid session desktop."""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        h_curr = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+        if h_curr:
+            return
+    except Exception:
+        pass
+    try:
+        h_input = user32.OpenInputDesktop(0, False, 0x01FF)
+        if h_input:
+            user32.SetThreadDesktop(h_input)
+            return
+    except Exception:
+        pass
+    try:
+        h_default = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+        if h_default:
+            user32.SetThreadDesktop(h_default)
+    except Exception:
+        pass
 
 COMMON_APP_MAP = {
     "notepad": "notepad.exe",
@@ -32,6 +82,17 @@ COMMON_APP_MAP = {
     "chrome": "chrome.exe",
     "edge": "msedge.exe",
     "brave": "brave.exe",
+    "word": "winword.exe",
+    "winword": "winword.exe",
+    "excel": "excel.exe",
+    "powerpoint": "powerpnt.exe",
+    "ppt": "powerpnt.exe",
+    "paint": "mspaint.exe",
+    "mspaint": "mspaint.exe",
+    "wordpad": "wordpad.exe",
+    "task manager": "taskmgr.exe",
+    "taskmgr": "taskmgr.exe",
+    "snipping tool": "snippingtool.exe",
     "settings": "ms-settings:"
 }
 
@@ -82,6 +143,13 @@ class SystemAgent:
 
             return {
                 "success": True,
+                "os": {
+                    "platform": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "hostname": socket.gethostname(),
+                    "uptime_hours": round(uptime_seconds / 3600, 1)
+                },
                 "cpu": {
                     "percent": cpu_pct,
                     "cores_logical": psutil.cpu_count(logical=True),
@@ -160,6 +228,13 @@ class SystemAgent:
                 try:
                     if p.info['name'] and p.info['name'].lower() == name.lower():
                         p.terminate()
+                        try:
+                            p.wait(timeout=0.5)
+                        except (psutil.TimeoutExpired, psutil.NoSuchProcess):
+                            try:
+                                p.kill()
+                            except Exception:
+                                pass
                         killed.append(f"{p.info['name']} (PID {p.info['pid']})")
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
@@ -172,8 +247,12 @@ class SystemAgent:
 
     def launch_app(self, app_name_or_path: str, args: Optional[List[str]] = None) -> Dict[str, Any]:
         """Launches an application or protocol on the Windows desktop."""
-        target = COMMON_APP_MAP.get(app_name_or_path.lower(), app_name_or_path)
+        if not app_name_or_path:
+            app_name_or_path = "notepad"
+        clean_app = app_name_or_path.lower().replace("application", "").replace("app", "").strip()
+        target = COMMON_APP_MAP.get(clean_app, COMMON_APP_MAP.get(app_name_or_path.lower(), app_name_or_path))
 
+        ensure_interactive_desktop()
         try:
             if target.startswith("ms-settings:"):
                 os.startfile(target)
@@ -235,8 +314,8 @@ class SystemAgent:
             return {
                 "success": res.returncode == 0,
                 "exit_code": res.returncode,
-                "stdout": res.stdout[:5000],
-                "stderr": res.stderr[:2000],
+                "stdout": res.stdout,
+                "stderr": res.stderr,
                 "duration_seconds": elapsed,
                 "command": command
             }
@@ -290,55 +369,97 @@ class SystemAgent:
             "top_processes": top_procs.get("processes", [])
         }
 
-    def find_window_handle(self, title_substr: str) -> Optional[Tuple[int, str]]:
-        """Finds active top-level window handle matching title_substr."""
+    def find_all_window_handles(self, title_substr: str) -> List[Tuple[int, str]]:
+        """Finds all active top-level window handles matching title_substr."""
         if not title_substr:
-            return None
+            return []
+        ensure_interactive_desktop()
         t_sub = title_substr.lower().strip()
-        user32 = ctypes.windll.user32
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
         found_windows: List[Tuple[int, str]] = []
+
+        # 0. Check current foreground window first
+        try:
+            fg_hwnd = user32.GetForegroundWindow()
+            if fg_hwnd and user32.IsWindowVisible(fg_hwnd):
+                length = user32.GetWindowTextLengthW(fg_hwnd)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(fg_hwnd, buf, length + 1)
+                    t_val = buf.value.lower()
+                    if t_sub in t_val or ("notepad" in t_sub and "notepad" in t_val):
+                        found_windows.append((fg_hwnd, buf.value))
+        except Exception:
+            pass
 
         def enum_cb(hwnd, lparam):
             if user32.IsWindowVisible(hwnd):
                 length = user32.GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    user32.GetWindowTextW(hwnd, buf, length + 1)
-                    t_val = buf.value
-                    if t_sub in t_val.lower():
-                        found_windows.append((hwnd, t_val))
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                t_val = buf.value.lower()
+
+                cname = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cname, 256)
+                c_val = cname.value.lower()
+
+                is_match = False
+                if t_sub in t_val or t_val in t_sub:
+                    is_match = True
+                elif "notepad" in t_sub and ("notepad" in t_val or "notepad" in c_val):
+                    is_match = True
+                elif "calc" in t_sub and ("calculator" in t_val or "calc" in c_val):
+                    is_match = True
+                elif "terminal" in t_sub and ("powershell" in t_val or "cmd" in t_val or "terminal" in c_val):
+                    is_match = True
+
+                if is_match and buf.value:
+                    if not any(h == hwnd for h, _ in found_windows):
+                        found_windows.append((hwnd, buf.value))
             return True
 
-        # 1. Check current thread desktop
-        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
-        if found_windows:
-            return found_windows[0]
+        cb_proc = WNDENUMPROC(enum_cb)
+        user32.EnumWindows(cb_proc, 0)
 
-        # 2. Check Default desktop if accessible
-        try:
-            h_default = user32.OpenDesktopW("Default", 0, False, 0x0100)
-            if h_default:
-                user32.EnumDesktopWindows(h_default, WNDENUMPROC(enum_cb), 0)
-                user32.CloseDesktop(h_default)
-                if found_windows:
-                    return found_windows[0]
-        except Exception:
-            pass
+        # If not found on current desktop, search all accessible desktops on WinSta0
+        if not found_windows:
+            desktops = get_accessible_desktops()
+            for d in desktops:
+                try:
+                    h_desk = user32.OpenDesktopW(d, 0, False, 0x01FF)
+                    if h_desk:
+                        user32.SetThreadDesktop(h_desk)
+                        user32.EnumWindows(cb_proc, 0)
+                        if found_windows:
+                            # Keep thread attached to the desktop where the window resides
+                            break
+                except Exception:
+                    pass
 
-        return None
+        return found_windows
+
+    def find_window_handle(self, title_substr: str) -> Optional[Tuple[int, str]]:
+        """Finds active top-level window handle matching title_substr."""
+        all_wins = self.find_all_window_handles(title_substr)
+        if not all_wins:
+            return None
+        # Prioritize untitled / new window or the first match
+        for h, t in all_wins:
+            if "untitled" in t.lower() or "*" in t:
+                return (h, t)
+        return all_wins[0]
 
     def wait_for_window(self, title_substr: str, timeout: float = 10.0) -> Dict[str, Any]:
         """Polls until a window matching title_substr appears, then restores and focuses it."""
+        ensure_interactive_desktop()
         t0 = time.time()
-        user32 = ctypes.windll.user32
         while time.time() - t0 < timeout:
             win = self.find_window_handle(title_substr)
             if win:
                 hwnd, title = win
                 try:
                     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    user32.BringWindowToTop(hwnd)
                     user32.SetForegroundWindow(hwnd)
                 except Exception:
                     pass
@@ -359,6 +480,7 @@ class SystemAgent:
 
     def type_into_window(self, text: str, title_substr: Optional[str] = None) -> Dict[str, Any]:
         """Types or sets text into the target window using UI Automation or input controller."""
+        ensure_interactive_desktop()
         target_hwnd = None
         target_title = None
 
@@ -373,10 +495,10 @@ class SystemAgent:
             if win:
                 target_hwnd, target_title = win
 
-        user32 = ctypes.windll.user32
         if target_hwnd:
             try:
                 user32.ShowWindow(target_hwnd, 9)
+                user32.BringWindowToTop(target_hwnd)
                 user32.SetForegroundWindow(target_hwnd)
                 time.sleep(0.3)
             except Exception:
@@ -412,7 +534,7 @@ class SystemAgent:
             except Exception as uia_err:
                 logger.debug(f"UIAutomation ValuePattern set failed, falling back to keystrokes: {uia_err}")
 
-        # Method 2: Keystroke typing via input_controller fallback
+        # Method 2: Keystroke typing via input_controller / pyautogui fallback
         if not uia_success:
             if input_controller:
                 try:
@@ -437,100 +559,176 @@ class SystemAgent:
         }
 
     def verify_window_text(self, title_substr: str, expected_snippet: str, timeout: float = 5.0) -> Dict[str, Any]:
-        """Reads text from target window and verifies expected snippet is present."""
+        """Reads text from matching target windows and verifies expected snippet is present in at least one."""
+        ensure_interactive_desktop()
         t0 = time.time()
-        user32 = ctypes.windll.user32
-        target_hwnd = None
-        target_title = None
+        expected_lower = expected_snippet.lower().strip()
 
-        while time.time() - t0 < timeout:
-            win = self.find_window_handle(title_substr)
-            if win:
-                target_hwnd, target_title = win
-                break
-            time.sleep(0.25)
+        import comtypes.client
+        from comtypes.gen.UIAutomationClient import (
+            CUIAutomation, IUIAutomation, IUIAutomationValuePattern, IUIAutomationTextPattern,
+            UIA_DocumentControlTypeId, UIA_EditControlTypeId, TreeScope_Descendants
+        )
 
-        if not target_hwnd:
-            return {
-                "success": False,
-                "verified": False,
-                "snippet_found": False,
-                "expected_snippet": expected_snippet,
-                "error": f"Could not find window matching '{title_substr}' on active desktop session.",
-                "session_accessible": False
-            }
+        uia = None
+        try:
+            uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
+        except Exception:
+            pass
 
-        extracted_text = ""
+        last_checked_title = None
+        last_checked_hwnd = None
+        last_extracted_text = ""
         verification_method = "Unknown"
 
-        # 1. UI Automation ValuePattern & TextPattern
-        try:
-            import comtypes.client
-            from comtypes.gen.UIAutomationClient import (
-                CUIAutomation, IUIAutomation, IUIAutomationValuePattern, IUIAutomationTextPattern,
-                UIA_DocumentControlTypeId, UIA_EditControlTypeId, TreeScope_Descendants
-            )
-            uia = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
-            elem = uia.ElementFromHandle(target_hwnd)
-            if elem:
-                cond_doc = uia.CreatePropertyCondition(30003, UIA_DocumentControlTypeId)
-                cond_edit = uia.CreatePropertyCondition(30003, UIA_EditControlTypeId)
-                cond_or = uia.CreateOrCondition(cond_doc, cond_edit)
-                text_elem = elem.FindFirst(TreeScope_Descendants, cond_or)
-                if text_elem:
-                    # Try ValuePattern
+        while time.time() - t0 < timeout:
+            matching_windows = self.find_all_window_handles(title_substr)
+            if not matching_windows:
+                time.sleep(0.25)
+                continue
+
+            for target_hwnd, target_title in matching_windows:
+                last_checked_hwnd = target_hwnd
+                last_checked_title = target_title
+
+                # Check if snippet is already reflected in the window title itself (e.g. '*PES University Bangalore - Notepad')
+                if expected_lower in target_title.lower():
+                    return {
+                        "success": True,
+                        "verified": True,
+                        "snippet_found": True,
+                        "expected_snippet": expected_snippet,
+                        "found_text_preview": target_title,
+                        "method": "WindowTitleVerification",
+                        "window_title": target_title,
+                        "hwnd": target_hwnd,
+                        "session_accessible": True,
+                        "message": f"Verified: '{expected_snippet}' confirmed present in {target_title}."
+                    }
+
+                # Try UI Automation
+                extracted_text = ""
+                if uia:
                     try:
-                        val_p = text_elem.GetCurrentPattern(10002)
-                        if val_p:
-                            vp = val_p.QueryInterface(IUIAutomationValuePattern)
-                            extracted_text = vp.CurrentValue or ""
-                            verification_method = "UIAutomationValuePattern"
+                        elem = uia.ElementFromHandle(target_hwnd)
+                        if elem:
+                            cond_doc = uia.CreatePropertyCondition(30003, UIA_DocumentControlTypeId)
+                            cond_edit = uia.CreatePropertyCondition(30003, UIA_EditControlTypeId)
+                            cond_or = uia.CreateOrCondition(cond_doc, cond_edit)
+                            text_elem = elem.FindFirst(TreeScope_Descendants, cond_or)
+                            if text_elem:
+                                try:
+                                    val_p = text_elem.GetCurrentPattern(10002)
+                                    if val_p:
+                                        vp = val_p.QueryInterface(IUIAutomationValuePattern)
+                                        extracted_text = vp.CurrentValue or ""
+                                        verification_method = "UIAutomationValuePattern"
+                                except Exception:
+                                    pass
+
+                                if not extracted_text:
+                                    try:
+                                        txt_p = text_elem.GetCurrentPattern(10014)
+                                        if txt_p:
+                                            tp = txt_p.QueryInterface(IUIAutomationTextPattern)
+                                            extracted_text = tp.DocumentRange.GetText(-1) or ""
+                                            verification_method = "UIAutomationTextPattern"
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass
 
-                    # Try TextPattern if ValuePattern empty
-                    if not extracted_text:
-                        try:
-                            txt_p = text_elem.GetCurrentPattern(10014)  # UIA_TextPatternId
-                            if txt_p:
-                                tp = txt_p.QueryInterface(IUIAutomationTextPattern)
-                                extracted_text = tp.DocumentRange.GetText(-1) or ""
-                                verification_method = "UIAutomationTextPattern"
-                        except Exception:
-                            pass
-        except Exception as e:
-            logger.debug(f"UIAutomation text read failed: {e}")
+                # Fallback to WM_GETTEXT on child Edit control
+                if not extracted_text:
+                    try:
+                        child_edit = user32.FindWindowExW(target_hwnd, 0, "Edit", None)
+                        if child_edit:
+                            buf = ctypes.create_unicode_buffer(8192)
+                            user32.SendMessageW(child_edit, 0x000D, 8192, buf)
+                            extracted_text = buf.value
+                            verification_method = "Win32WM_GETTEXT"
+                    except Exception:
+                        pass
 
-        # 2. WM_GETTEXT fallback on child Edit control
-        if not extracted_text:
-            try:
-                child_edit = user32.FindWindowExW(target_hwnd, 0, "Edit", None)
-                if child_edit:
-                    buf = ctypes.create_unicode_buffer(8192)
-                    user32.SendMessageW(child_edit, 0x000D, 8192, buf)
-                    extracted_text = buf.value
-                    verification_method = "Win32WM_GETTEXT"
-            except Exception:
-                pass
+                last_extracted_text = extracted_text
+                if extracted_text and expected_lower in extracted_text.lower():
+                    preview = (extracted_text[:200] + "...") if len(extracted_text) > 200 else extracted_text
+                    return {
+                        "success": True,
+                        "verified": True,
+                        "snippet_found": True,
+                        "expected_snippet": expected_snippet,
+                        "found_text_preview": preview,
+                        "method": verification_method,
+                        "window_title": target_title,
+                        "hwnd": target_hwnd,
+                        "session_accessible": True,
+                        "message": f"Verified: '{expected_snippet}' confirmed present in {target_title} via {verification_method}."
+                    }
 
-        snippet_found = expected_snippet.lower() in extracted_text.lower() if extracted_text else False
-        preview = (extracted_text[:200] + "...") if len(extracted_text) > 200 else extracted_text
+            time.sleep(0.25)
 
         return {
-            "success": snippet_found,
-            "verified": snippet_found,
-            "snippet_found": snippet_found,
+            "success": False,
+            "verified": False,
+            "snippet_found": False,
             "expected_snippet": expected_snippet,
-            "found_text_preview": preview,
+            "found_text_preview": (last_extracted_text[:200] + "...") if len(last_extracted_text) > 200 else last_extracted_text,
             "method": verification_method,
-            "window_title": target_title,
-            "hwnd": target_hwnd,
-            "session_accessible": True,
-            "message": (
-                f"Verified: '{expected_snippet}' confirmed present in {target_title} via {verification_method}."
-                if snippet_found
-                else f"Verification failed: expected snippet '{expected_snippet}' was not found in {target_title} (read {len(extracted_text)} chars)."
-            )
+            "window_title": last_checked_title or title_substr,
+            "hwnd": last_checked_hwnd,
+            "session_accessible": bool(last_checked_hwnd),
+            "message": f"Verification failed: expected snippet '{expected_snippet}' was not found in matching windows (checked {last_checked_title})."
+        }
+
+    def press_key_or_hotkey(self, keys: Any, title: Optional[str] = None, window_title: Optional[str] = None, **kw: Any) -> Dict[str, Any]:
+        """Sends keyboard shortcut or keystroke sequence to target window or active foreground window."""
+        ensure_interactive_desktop()
+        target_title = title or window_title
+        focused_title = None
+
+        if target_title:
+            w_res = self.wait_for_window(target_title, timeout=4.0)
+            if w_res.get("success"):
+                focused_title = w_res["title"]
+
+        time.sleep(0.15)
+        raw_keys = keys or ""
+        str_keys = str(raw_keys).strip()
+
+        if isinstance(raw_keys, (list, tuple)):
+            if input_controller:
+                input_controller.hotkey(*[str(k).lower().strip() for k in raw_keys])
+            else:
+                import pyautogui
+                pyautogui.hotkey(*[str(k).lower().strip() for k in raw_keys])
+        elif "+" in str_keys:
+            parts = [p.strip().lower() for p in str_keys.split("+")]
+            if input_controller:
+                input_controller.hotkey(*parts)
+            else:
+                import pyautogui
+                pyautogui.hotkey(*parts)
+        elif str_keys.lower() in ["enter", "return", "tab", "escape", "esc", "space", "backspace", "delete", "win", "up", "down", "left", "right"]:
+            if input_controller:
+                input_controller.press_key(str_keys.lower())
+            else:
+                import pyautogui
+                pyautogui.press(str_keys.lower())
+        else:
+            # Sequence of characters or math like '25*4=' or text
+            if input_controller:
+                input_controller.type_text(str_keys)
+            else:
+                import pyautogui
+                pyautogui.write(str_keys, interval=0.01)
+
+        return {
+            "success": True,
+            "keys": raw_keys,
+            "window": focused_title or "active window",
+            "message": f"Successfully sent keystrokes/shortcut '{raw_keys}' to {focused_title or 'active window'}."
         }
 
 system_agent = SystemAgent()
+

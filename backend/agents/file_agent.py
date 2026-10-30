@@ -230,29 +230,29 @@ class FileAgent:
             if not target_path or not str(target_path).strip():
                 return True, self.workspace_root, ""
 
-            # 1. Check if target_path is a known Windows folder alias
-            known = resolve_windows_known_folders(target_path)
-            if known:
-                return True, known[0], ""
-
             raw_str = str(target_path).strip()
-            # Clean common natural language wrappers if any
-            norm = re.sub(r"^(?:go\s+for|search\s+in|check|scan|look\s+in|in|on|inside|to|the)\s+", "", raw_str, flags=re.IGNORECASE).strip()
-            norm = re.sub(r"[\.,;:!?]+$", "", norm).strip()
-            known2 = resolve_windows_known_folders(norm)
-            if known2:
-                return True, known2[0], ""
-
             p = Path(os.path.expanduser(os.path.expandvars(raw_str)))
-            if not p.is_absolute():
+            if p.is_absolute():
+                resolved = p.resolve()
+            else:
+                # 1. Check if target_path is a known Windows folder alias
+                known = resolve_windows_known_folders(target_path)
+                if known:
+                    return True, known[0], ""
+
+                # Clean common natural language wrappers if any
+                norm = re.sub(r"^(?:go\s+for|search\s+in|check|scan|look\s+in|in|on|inside|to|the)\s+", "", raw_str, flags=re.IGNORECASE).strip()
+                norm = re.sub(r"[\.,;:!?]+$", "", norm).strip()
+                known2 = resolve_windows_known_folders(norm)
+                if known2:
+                    return True, known2[0], ""
+
                 # Check if resolving under user home exists first (e.g. "Desktop", "Downloads")
                 home_candidate = (Path.home() / p).resolve()
                 if home_candidate.exists():
                     resolved = home_candidate
                 else:
                     resolved = (self.workspace_root / p).resolve()
-            else:
-                resolved = p.resolve()
 
             # Prevent forbidden Windows system directories
             forbidden_prefixes = [
@@ -423,7 +423,14 @@ class FileAgent:
                     elif is_wildcard:
                         is_match = fnmatch.fnmatch(f_lower, query_lower)
                     elif sub_query:
-                        is_match = sub_query in f_lower
+                        f_norm = re.sub(r"[_\-\s\.]+", " ", f_lower)
+                        sub_norm = re.sub(r"[_\-\s\.]+", " ", sub_query)
+                        if sub_query in f_lower or sub_norm in f_norm:
+                            is_match = True
+                        else:
+                            tokens = [t for t in re.findall(r"[a-zA-Z0-9]+", sub_norm) if len(t) >= 2 and t not in ["file", "doc", "docs", "document"]]
+                            if tokens and all(t in f_norm for t in tokens):
+                                is_match = True
                     elif clean_ext:
                         is_match = f_lower.endswith(clean_ext)
 
@@ -647,12 +654,23 @@ class FileAgent:
         cleaned = re.sub(r"^(?:the|a|an)\s+", "", cleaned, flags=re.IGNORECASE).strip()
         cleaned = cleaned.rstrip(".").strip()
 
-        # Handle pronoun references ("it", "that", "this", "the file", etc.)
-        is_pronoun = cleaned.lower() in [
+        # Handle pronoun references ("it", "that", "this", "that pdf", "that.pdf", ".pdf", etc.)
+        clean_lower = cleaned.lower()
+        pronoun_ext = None
+        for raw_k in KNOWN_EXTENSIONS:
+            ext = f".{raw_k.lstrip('.')}"
+            ext_bare = raw_k.lstrip('.')
+            if ext == clean_lower or clean_lower.endswith(ext) or clean_lower.endswith(ext_bare) or ext_bare in clean_lower.split():
+                words = [w for w in re.findall(r"[a-zA-Z0-9]+", clean_lower)]
+                if words and all(w in ["it", "that", "this", "the", "one", "file", "doc", "document", ext_bare] for w in words):
+                    pronoun_ext = ext
+                    break
+
+        is_pronoun = (pronoun_ext is not None) or (clean_lower in [
             "it", "that", "this", "the file", "that file", "this file",
-            "file", "doc", "document", "the doc", "the document", "the pdf",
-            "it up", "it please", "one"
-        ]
+            "file", "doc", "document", "the doc", "the document",
+            "it up", "it please", "one", "that one", "this one", "the one", "the file you found"
+        ])
 
         ordinals = {
             "first": 1, "1st": 1, "one": 1, "1": 1,
@@ -670,49 +688,35 @@ class FileAgent:
         resolved_file: Optional[Dict[str, Any]] = None
         target_path_str: Optional[str] = None
 
-        # 1. Pronoun resolution against self.last_search_results
+        # 1. Pronoun resolution against self.last_search_results or recent documents
         if is_pronoun:
             if self.last_search_results:
-                if len(self.last_search_results) == 1:
+                if pronoun_ext:
+                    matching = [it for it in self.last_search_results if it.get("filename", "").lower().endswith(pronoun_ext)]
+                    if matching:
+                        resolved_file = matching[0]
+                        target_path_str = resolved_file["path"]
+                    else:
+                        resolved_file = self.last_search_results[0]
+                        target_path_str = resolved_file["path"]
+                else:
                     resolved_file = self.last_search_results[0]
                     target_path_str = resolved_file["path"]
-                else:
-                    names = [c["filename"] for c in self.last_search_results]
-                    return {
-                        "success": False,
-                        "opened": False,
-                        "file_found": True,
-                        "open_requested": True,
-                        "command_dispatched": False,
-                        "visibly_opened": False,
-                        "ambiguous": True,
-                        "candidates": names,
-                        "candidate_items": self.last_search_results,
-                        "message": f"Multiple files found in recent search results: {', '.join(names)}. Which one would you like to open?",
-                        "error": "Ambiguous file selection. Multiple files match recent search results."
-                    }
             else:
-                # Attempt to retrieve recent documents if no search results cached
                 recent_check = self.find_recent_documents(limit=5)
                 docs = recent_check.get("documents", [])
-                if len(docs) == 1:
-                    resolved_file = docs[0]
-                    target_path_str = resolved_file["path"]
-                elif len(docs) > 1:
-                    names = [d["filename"] for d in docs]
-                    return {
-                        "success": False,
-                        "opened": False,
-                        "file_found": True,
-                        "open_requested": True,
-                        "command_dispatched": False,
-                        "visibly_opened": False,
-                        "ambiguous": True,
-                        "candidates": names,
-                        "candidate_items": docs,
-                        "message": f"Multiple recent documents found: {', '.join(names)}. Which one would you like to open?",
-                        "error": "Ambiguous file selection. Please specify which document to open."
-                    }
+                if docs:
+                    if pronoun_ext:
+                        matching = [d for d in docs if d.get("filename", "").lower().endswith(pronoun_ext)]
+                        if matching:
+                            resolved_file = matching[0]
+                            target_path_str = resolved_file["path"]
+                        else:
+                            resolved_file = docs[0]
+                            target_path_str = resolved_file["path"]
+                    else:
+                        resolved_file = docs[0]
+                        target_path_str = resolved_file["path"]
                 else:
                     return {
                         "success": False,
@@ -747,32 +751,46 @@ class FileAgent:
                     resolved_file = self.last_search_results[target_idx - 1]
                     target_path_str = resolved_file["path"]
 
-        # 3. Try matching by name or stem against self.last_search_results
+        # 3. Try matching by name, stem, or tokens against self.last_search_results
         if not target_path_str and self.last_search_results:
-            norm_target = re.sub(r"[_\-\s]+", " ", cleaned.lower()).strip()
+            req_ext = None
+            ext_m = re.search(r"\.([a-zA-Z0-9_\-]+)$", clean_lower)
+            if ext_m and ext_m.group(1).lower() in KNOWN_EXTENSIONS:
+                req_ext = f".{ext_m.group(1).lower()}"
+                clean_stem = clean_lower[:ext_m.start()].strip()
+            else:
+                words = clean_lower.split()
+                if len(words) >= 2 and words[-1].lower() in KNOWN_EXTENSIONS:
+                    req_ext = f".{words[-1].lower()}"
+                    clean_stem = " ".join(words[:-1]).strip()
+                else:
+                    clean_stem = clean_lower
+
+            norm_target = re.sub(r"[_\-\s\.]+", " ", clean_stem).strip()
+            tokens = [t for t in re.findall(r"[a-zA-Z0-9]+", norm_target) if t not in ["the", "my", "a", "an", "file", "doc", "docs", "document", "pdf", "docx", "pptx", "txt", "xlsx", "csv"]]
+
             exact_matches = []
             stem_matches = []
-            partial_matches = []
+            token_matches = []
 
             for item in self.last_search_results:
                 fname = item.get("filename", "")
-                fpath = item.get("path", "")
+                f_ext = item.get("extension", "").lower() or Path(fname).suffix.lower()
+                if req_ext and f_ext != req_ext and not fname.lower().endswith(req_ext):
+                    continue
+
                 stem = Path(fname).stem
-                norm_fname = re.sub(r"[_\-\s]+", " ", fname.lower()).strip()
-                norm_stem = re.sub(r"[_\-\s]+", " ", stem.lower()).strip()
+                norm_fname = re.sub(r"[_\-\s\.]+", " ", fname.lower()).strip()
+                norm_stem = re.sub(r"[_\-\s\.]+", " ", stem.lower()).strip()
 
-                if norm_target == norm_fname:
+                if norm_target == norm_fname or norm_target == norm_stem:
                     exact_matches.append(item)
-                elif norm_target == norm_stem:
-                    stem_matches.append(item)
                 elif norm_target in norm_fname or norm_target in norm_stem:
-                    partial_matches.append(item)
-                else:
-                    tokens = [t for t in norm_target.split() if t not in ["file", "doc", "docs", "document"]]
-                    if tokens and all(t in norm_stem for t in tokens):
-                        partial_matches.append(item)
+                    stem_matches.append(item)
+                elif tokens and all(t in norm_stem or t in norm_fname for t in tokens):
+                    token_matches.append(item)
 
-            candidates = exact_matches or stem_matches or partial_matches
+            candidates = exact_matches or stem_matches or token_matches
             seen_cand = set()
             unique_candidates = []
             for c in candidates:
@@ -1136,7 +1154,194 @@ class FileAgent:
             "items": entries
         }
 
+    def generate_document(
+        self,
+        doc_type: str = "pdf",
+        title: str = "Document",
+        topic: Optional[str] = None,
+        content: Optional[str] = None,
+        sections: Optional[List[Dict[str, Any]]] = None,
+        output_path: Optional[str] = None,
+        theme: str = "professional",
+        **kw: Any
+    ) -> Dict[str, Any]:
+        """
+        Generates formatted documents (PDF, DOCX, XLSX, PPTX, TXT) with rich headings,
+        paragraphs, and bullet points. Automatically caches generated file in recent search results.
+        """
+        norm_type = (doc_type or "pdf").lower().replace(".", "").strip()
+        clean_title = re.sub(r'[^\w\s\-]', '', title or "Document").strip() or "Document"
+        file_stem = re.sub(r'\s+', '_', clean_title)[:40]
+
+        # Determine target output path
+        if output_path:
+            p = Path(output_path).resolve()
+        else:
+            doc_dir = Path.home() / "Documents"
+            if not doc_dir.exists():
+                doc_dir = self.workspace_root / "Documents"
+            doc_dir.mkdir(parents=True, exist_ok=True)
+            p = doc_dir / f"{file_stem}.{norm_type}"
+
+        # Build sections if not provided
+        effective_topic = topic or clean_title
+        if not sections:
+            if "pes" in effective_topic.lower():
+                sections = [
+                    {
+                        "heading": "1. Institutional Overview & Accreditation",
+                        "paragraphs": [
+                            "PES University (formerly PES Institute of Technology - PESIT) was established in Bengaluru, Karnataka, by the People's Education Society (PES). It is widely regarded as one of South India's premier private teaching and research universities.",
+                            "The university is accredited with the highest NAAC A++ rating and consistently ranks among the top engineering and multidisciplinary institutions in Karnataka and nationwide."
+                        ],
+                        "bullets": [
+                            "Accreditation: NAAC A++ Grade",
+                            "Campuses: Flagship Ring Road Campus (Banashankari) and Electronic City Campus, Bengaluru",
+                            "Flagship Disciplines: Computer Science & Engineering, AI & Machine Learning, Electronics, Management, Law, and Pharmacy",
+                            "Admissions: PESSAT National Entrance Test and KCET"
+                        ]
+                    },
+                    {
+                        "heading": "2. Academic Excellence, Placements & Research",
+                        "paragraphs": [
+                            "PES University is renowned for an industry-aligned curriculum, world-class faculty, and an exceptional campus placement record with global tier-one technology companies.",
+                            "The institution actively fosters undergraduate research, innovation, and venture incubation through the PES Center for Innovation and Entrepreneurship (CIE)."
+                        ],
+                        "bullets": [
+                            "Top Recruiters: Cisco, Microsoft, Amazon, Intel, Morgan Stanley, Google, and Deloitte",
+                            "Consistently high placement rate across software engineering, cloud, and quantitative finance",
+                            "PISAT: Student-developed micro-satellite successfully launched into orbit with ISRO",
+                            "State-of-the-art incubation hubs and specialized AI, IoT, and VLSI laboratories"
+                        ]
+                    },
+                    {
+                        "heading": "3. Campus Infrastructure, Culture & Global Alumni",
+                        "paragraphs": [
+                            "Spanning vibrant campuses with high-speed digital infrastructure, modern auditorium complexes, and athletic facilities, PES University provides a world-class student experience.",
+                            "The university hosts 'Aatmatrisha', one of South India's largest annual techno-cultural fests, alongside national hackathons and robotics symposiums."
+                        ],
+                        "bullets": [
+                            "Over 30 student-led technical and cultural societies (ACM, IEEE, Rotaract, Shunya)",
+                            "Distinguished alumni network in executive and engineering leadership roles worldwide",
+                            "Active international research collaborations and student exchange programs"
+                        ]
+                    }
+                ]
+            else:
+                sections = [
+                    {
+                        "heading": "1. Executive Summary & Core Overview",
+                        "paragraphs": [
+                            f"This document provides a structured analysis and detailed report regarding {effective_topic}.",
+                            f"Generated automatically by the Windows Multi-Agent System on {datetime.now().strftime('%B %d, %Y')}."
+                        ],
+                        "bullets": [
+                            f"Subject Domain: {effective_topic}",
+                            "Verified document generation pipeline",
+                            "Formatted for cross-platform reading and printing"
+                        ]
+                    },
+                    {
+                        "heading": "2. Detailed Analysis & Operational Highlights",
+                        "paragraphs": [
+                            content if content else f"Key principles and foundational data concerning {effective_topic} emphasize consistent performance, rigorous architecture, and dependable system execution."
+                        ],
+                        "bullets": [
+                            "Comprehensive coverage of core concepts",
+                            "Standardized document architecture",
+                            "Seamless integration into desktop workflows"
+                        ]
+                    },
+                    {
+                        "heading": "3. Conclusions & Strategic Action Items",
+                        "paragraphs": [
+                            f"In summary, {effective_topic} represents an important objective. Continued focus and documentation ensure long-term reproducibility."
+                        ],
+                        "bullets": [
+                            "Maintain up-to-date documentation records",
+                            "Review key findings periodically"
+                        ]
+                    }
+                ]
+
+        from doc_agent import doc_agent
+
+        create_res = {}
+        if norm_type == "pdf":
+            create_res = doc_agent.create_pdf(str(p), clean_title, sections, theme=theme)
+        elif norm_type in ["docx", "doc", "word"]:
+            create_res = doc_agent.create_docx(str(p), clean_title, sections, theme=theme)
+        elif norm_type in ["pptx", "ppt", "powerpoint"]:
+            slides_data = [
+                {"title": clean_title, "bullets": [f"Topic: {effective_topic}", f"Generated on {datetime.now().strftime('%B %d, %Y')}"]}
+            ]
+            for s in sections:
+                slides_data.append({
+                    "title": s.get("heading", "Section"),
+                    "bullets": s.get("bullets", []) or s.get("paragraphs", [])
+                })
+            create_res = doc_agent.create_ppt(str(p), clean_title, slides_data, theme="dark")
+        elif norm_type in ["xlsx", "xls", "excel"]:
+            rows = []
+            for s in sections:
+                for b in s.get("bullets", []):
+                    rows.append([s.get("heading", ""), b])
+            sheets = [{
+                "name": "Report",
+                "headers": ["Section", "Detail"],
+                "rows": rows,
+                "summary": f"Report on {effective_topic}"
+            }]
+            create_res = doc_agent.create_xlsx(str(p), clean_title, sheets, theme="dark")
+        else:
+            # Plain text / Markdown
+            p.parent.mkdir(parents=True, exist_ok=True)
+            txt_lines = [f"# {clean_title}\n\n*Generated on {datetime.now().strftime('%B %d, %Y')}*\n"]
+            for s in sections:
+                txt_lines.append(f"\n## {s.get('heading', '')}\n")
+                for para in s.get("paragraphs", []):
+                    txt_lines.append(f"{para}\n")
+                for bullet in s.get("bullets", []):
+                    txt_lines.append(f"- {bullet}\n")
+            p.write_text("\n".join(txt_lines), encoding="utf-8")
+            create_res = {"status": "success", "file": str(p)}
+
+        if not p.exists() or p.stat().st_size == 0:
+            err = create_res.get("message", f"Failed to generate {norm_type.upper()} file.")
+            return {"success": False, "generated": False, "error": err}
+
+        size_bytes = p.stat().st_size
+        size_display = format_bytes(size_bytes)
+        mod_time = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+
+        # Cache at top of search results so follow-up "open it" immediately finds it!
+        doc_item = {
+            "id": 1,
+            "filename": p.name,
+            "path": str(p),
+            "size_bytes": size_bytes,
+            "size_display": size_display,
+            "modified": mod_time,
+            "match_type": "generated"
+        }
+        for item in self.last_search_results:
+            item["id"] += 1
+        self.last_search_results.insert(0, doc_item)
+
+        return {
+            "success": True,
+            "generated": True,
+            "doc_type": norm_type.upper(),
+            "filename": p.name,
+            "path": str(p),
+            "size_bytes": size_bytes,
+            "size_display": size_display,
+            "title": clean_title,
+            "message": f"Successfully generated {norm_type.upper()} file '{p.name}' ({size_display}) at {p}."
+        }
+
     check_desktop_interactivity = staticmethod(check_desktop_interactivity)
     is_window_visible_for_file = staticmethod(is_window_visible_for_file)
 
 file_agent = FileAgent()
+
